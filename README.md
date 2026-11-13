@@ -263,12 +263,40 @@ first, so it is deliberately explicit.
 | **Cadence** — the QNX service, the benchmark harness, the docs | Tradoooo / Cadence contributors | **MIT** (this repository) |
 | **llama.cpp** — inference runtime, QNX port | The ggml-org / llama.cpp contributors | **MIT** |
 | **Ternary-Bonsai-2-2B** — model weights | PrismML (Bonsai) | **Apache-2.0** (model weights) |
-| *LFM3-1.7B* — used as a *control model* only, not redistributed here | Liquid AI | *see the model card* (`TODO: exact licence string to paste`) |
-| *Qwen2.5-1.5B* — used as a *control model* only, not redistributed here | Alibaba / Qwen team | *see the model card* (`TODO: exact licence string to paste`) |
+| *LFM3-1.7B* — used as a *control model* only, not redistributed here | Liquid AI | *LFM Open License v1.0* (free below 10 M$ of annual revenue; not an OSI licence) |
+| *Qwen2.5-1.5B* — used as a *control model* only, not redistributed here | Alibaba / Qwen team | *Apache-2.0* |
 
 This repository is MIT-licensed (see [`LICENSE`](LICENSE)). The model weights
 are **not** redistributed here: the build instructions tell you where to fetch
 `Ternary-Bonsai-2-2B-Q2_0.gguf` and how to check its SHA-256.
+
+---
+
+## The QNX porting layer
+
+> **Submission note** — this is a *port*, not a fork. llama.cpp is never
+> vendored here: the upstream project is referenced by URL and pinned to an
+> exact commit, and the port is delivered as a patch. That is what the QNX
+> Global Hackathon rules ask for.
+
+| Item | Value |
+| --- | --- |
+| Upstream | <https://github.com/ggml-org/llama.cpp> |
+| Pinned commit | `9daa0aa22b8aa0143344d7549dee1f0e32f048bb` |
+| Target | QNX Neutrino 8.0, `x86_64`, SDP 8.0 (`qcc`, GCC 12.2.0) |
+| Measured in the guest (KVM, 6 threads) | **17.3 – 17.7 tok/s** generation, **32.9 – 34.3 tok/s** prompt |
+| Same binary, native Linux, same CPU | 16.6 tok/s — the port costs nothing measurable |
+
+| Path | Content |
+| --- | --- |
+| `patches/0001-qnx-port.patch` | The port: 5 files, +53/-1 lines. |
+| `patches/README.md` | What each modification fixes and why. |
+| `patches/qnx.nto.toolchain.cmake` | CMake toolchain for the QNX SDP. |
+| `tools/build-llama.sh` | Clone at the pinned commit, apply the patch, build. |
+| `tools/fetch-model.sh` | Download the GGUF model and check its SHA-256. |
+| `images/buildfile` | The IFS buildfile (boot chain, drivers, guest scripts). |
+| `images/build-image.sh` | `mkifs` + `mkqnx6fsimg`: build the image and the model disk. |
+| `images/make-model-disk.sh` | Build the qnx6 filesystem that carries the model. |
 
 ---
 

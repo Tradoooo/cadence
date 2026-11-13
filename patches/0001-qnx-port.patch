@@ -1,0 +1,124 @@
+diff --git a/common/common.cpp b/common/common.cpp
+index 657dcdb..ff09338 100644
+--- a/common/common.cpp
++++ b/common/common.cpp
+@@ -916,8 +916,13 @@ std::string wstring_to_utf8(const std::wstring & str) {
+ 
+ void fs_write_atomic(const std::filesystem::path & path, const std::string & data) {
+     // a random suffix gives every writer its own temporary file, across processes and containers
++#if defined(__QNX__)
++    // QNX invite: /dev/urandom peut etre absent -> std::random_device leve une exception.
++    const uint64_t id = (uint64_t) std::chrono::system_clock::now().time_since_epoch().count();
++#else
+     std::random_device rd;
+     const uint64_t id = ((uint64_t) rd() << 32) | rd();
++#endif
+ 
+     std::error_code ec;
+     std::filesystem::path path_tmp = path;
+diff --git a/common/download.cpp b/common/download.cpp
+index 682fd6e..a22e01f 100644
+--- a/common/download.cpp
++++ b/common/download.cpp
+@@ -31,6 +31,8 @@
+ #   endif
+ #elif defined(_AIX)
+ #include <sys/limits.h>
++#elif defined(__QNX__)
++#include <limits.h>
+ #else
+ #include <sys/syslimits.h>
+ #endif
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index 2978340..562b4d7 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -362,6 +362,41 @@ static const char * ggml_backend_cpu_device_get_description(ggml_backend_dev_t d
+     return ctx->description.c_str();
+ }
+ 
++#ifdef __QNX__
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/syspage.h>
++static int _qnx_get_memory(size_t *total, size_t *free) {
++    int                 fd;
++    struct stat         st;
++    char                *str = (char *)SYSPAGE_ENTRY(strings)->data;
++    struct asinfo_entry *as  = (struct asinfo_entry *)SYSPAGE_ENTRY(asinfo);
++    unsigned            num;
++
++    *total = *free = 0;
++    
++    if ((fd = open("/proc", O_RDONLY)) == -1) {
++        return -1;
++    }
++
++    if (fstat(fd, &st) == -1) {
++        return -1;
++    }
++
++    *free = st.st_size;
++    close(fd);
++
++    for (num = SYSPAGE_ENTRY_SIZE(asinfo) / sizeof(*as); num > 0; --num) {
++        if (strcmp(&str[as->name], "ram") == 0) {
++	    *total += as->end - as->start + 1;
++	}
++	++as;
++    }
++
++    return 0;
++}
++#endif
++
+ static void ggml_backend_cpu_device_get_memory(ggml_backend_dev_t dev, size_t * free, size_t * total) {
+ #ifdef _WIN32
+     MEMORYSTATUSEX status;
+@@ -369,6 +404,8 @@ static void ggml_backend_cpu_device_get_memory(ggml_backend_dev_t dev, size_t *
+     GlobalMemoryStatusEx(&status);
+     *total = status.ullTotalPhys;
+     *free = status.ullAvailPhys;
++#elif __QNX__
++    _qnx_get_memory(total, free);
+ #else
+     long pages = sysconf(_SC_PHYS_PAGES);
+     long page_size = sysconf(_SC_PAGE_SIZE);
+diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
+index d8cd441..a99e1ea 100644
+--- a/src/llama-sampler.cpp
++++ b/src/llama-sampler.cpp
+@@ -341,12 +341,17 @@ static void llama_sampler_top_k_impl(llama_token_data_array * cur_p, int32_t k)
+ static uint32_t get_rng_seed(uint32_t seed) {
+     if (seed == LLAMA_DEFAULT_SEED) {
+         // use system clock if std::random_device is not a true RNG
++#if defined(__QNX__)
++        // QNX invite: /dev/urandom peut etre absent -> std::random_device leve une exception.
++        return (uint32_t) std::chrono::system_clock::now().time_since_epoch().count();
++#else
+         static bool is_rd_prng = std::random_device().entropy() == 0;
+         if (is_rd_prng) {
+             return (uint32_t) std::chrono::system_clock::now().time_since_epoch().count();
+         }
+         std::random_device rd;
+         return rd();
++#endif
+     }
+     return seed;
+ }
+diff --git a/vendor/sheredom/subprocess.h b/vendor/sheredom/subprocess.h
+index 67420c1..a3228fa 100644
+--- a/vendor/sheredom/subprocess.h
++++ b/vendor/sheredom/subprocess.h
+@@ -312,7 +312,10 @@ subprocess_weak int subprocess_alive(struct subprocess_s *const process);
+    macro folds to 0 and so answers correctly. Define this yourself to override
+    the detection, for instance on musl older than 1.1.24. */
+ #if !defined(SUBPROCESS_HAVE_CWD)
+-#if SUBPROCESS_SPAWN_VIA_FORK
++#if defined(__QNX__)
++/* QNX: posix_spawn_file_actions_addchdir_np n'existe pas */
++#define SUBPROCESS_HAVE_CWD 0
++#elif SUBPROCESS_SPAWN_VIA_FORK
+ #define SUBPROCESS_HAVE_CWD 1
+ #elif defined(__GLIBC__)
+ #if __GLIBC_PREREQ(2, 29)

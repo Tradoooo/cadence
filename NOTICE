@@ -1,0 +1,64 @@
+Cadence — QNX Neutrino porting layer
+Copyright (c) 2026 Tradoooo
+
+This product includes software developed by the llama.cpp project
+(https://github.com/ggml-org/llama.cpp), licensed under the MIT Licence.
+
+This product includes software developed by the QNX Neutrino SDK
+(https://www.qnx.com/), licensed separately by BlackBerry.
+
+-------------------------------------------------------------------------------
+MIT licence — applies to the port patch (patches/0001-qnx-port.patch) and to
+the QNX toolchain file (patches/qnx.nto.toolchain.cmake).
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+-------------------------------------------------------------------------------
+Third-party notices
+
+1. llama.cpp
+   Copyright (c) Georgi Gerganov and llama.cpp contributors
+   https://github.com/ggml-org/llama.cpp
+   Licensed under the MIT Licence.
+   Cadence does not redistribute llama.cpp sources. The port is delivered as a
+   patch applied on top of the upstream commit
+   9daa0aa22b8aa0143344d7549dee1f0e32f048bb.
+
+2. qnx.nto.toolchain.cmake
+   Derived from https://github.com/xtang2010/llama.cpp-qnx
+   Copyright (c) 2025 xtang2010
+   Licensed under the MIT Licence.
+   The file has been rewritten and corrected for Cadence; the original
+   copyright notice and the MIT licence text are preserved in its header.
+
+3. sheredom/subprocess.h
+   Vendored inside llama.cpp (vendor/sheredom/subprocess.h), Unlicense / MIT.
+   The port adds one QNX-specific guard. Copyright belongs to the upstream
+   authors.
+
+4. Ternary-Bonsai-2-2B-Q2_0.gguf
+   Model weights published by prism-ml on Hugging Face:
+   https://huggingface.co/prism-ml/Ternary-Bonsai-2-2B-gguf
+   The model is NOT redistributed with this repository. tools/fetch-model.sh
+   downloads it from Hugging Face and verifies its SHA-256 checksum.
+
+5. QNX Neutrino SDP
+   The QNX Software Development Platform is a separate product of BlackBerry.
+   Its headers, libraries and host tools are NOT redistributed here; the build
+   scripts only reference an installed SDP.
