@@ -1,0 +1,152 @@
+{
+  "proof": {
+    "cycles": 38000,
+    "deadline_misses": 591,
+    "jitter_max_us": 85710.113,
+    "jitter_p99_us": 2267.973,
+    "token_p99_ms": 92.033,
+    "throughput_tps": 13.709,
+    "tokens": 300
+  },
+  "control_task": [
+    {
+      "phase": "idle",
+      "priority": 63,
+      "cpu": 0,
+      "affinity": true,
+      "period_us": 1000.0,
+      "cycles": 15000,
+      "deadline_misses": 40,
+      "skipped_periods": 85,
+      "jitter_min_us": 166.976,
+      "jitter_mean_us": 312.986,
+      "jitter_max_us": 10161.949,
+      "jitter_p99_us": 336.157,
+      "work_max_us": 34.154
+    },
+    {
+      "phase": "llm_isolated",
+      "priority": 63,
+      "cpu": 0,
+      "affinity": true,
+      "period_us": 1000.0,
+      "cycles": 38000,
+      "deadline_misses": 591,
+      "skipped_periods": 9369,
+      "jitter_min_us": 2.696,
+      "jitter_mean_us": 1055.21,
+      "jitter_max_us": 85710.113,
+      "jitter_p99_us": 2267.973,
+      "work_max_us": 48.472
+    },
+    {
+      "phase": "llm_shared",
+      "priority": 10,
+      "cpu": -1,
+      "affinity": true,
+      "period_us": 1000.0,
+      "cycles": 18000,
+      "deadline_misses": 6072,
+      "skipped_periods": 9557,
+      "jitter_min_us": 18.535,
+      "jitter_mean_us": 1126.529,
+      "jitter_max_us": 5020.945,
+      "jitter_p99_us": 3589.389,
+      "work_max_us": 15.774
+    }
+  ],
+  "llm_probe": [
+    {
+      "tag": "llm",
+      "tokens": 300,
+      "threads": 5,
+      "generation_s": 21.882855,
+      "throughput_tps": 13.709,
+      "lat_min_ms": 60.391,
+      "lat_mean_ms": 69.943,
+      "lat_max_ms": 111.043,
+      "lat_p99_ms": 92.033,
+      "model_load_s": 1.161
+    },
+    {
+      "tag": "llm",
+      "tokens": 200,
+      "threads": 6,
+      "generation_s": 12.732967,
+      "throughput_tps": 15.707,
+      "lat_min_ms": 55.55,
+      "lat_mean_ms": 59.177,
+      "lat_max_ms": 90.387,
+      "lat_p99_ms": 75.055,
+      "model_load_s": 0.974
+    }
+  ],
+  "trace_metrics": {
+    "events": 449140,
+    "span_us": 12000198.261,
+    "duration_s": 12.000198,
+    "by_event": {
+      "THREAD:THRUNNING": 138988,
+      "THREAD:THREADY": 124096,
+      "THREAD:THINTR": 46205,
+      "SYSTEM:SEND_IPI_64": 40610,
+      "SYSTEM:IPI_64": 30929,
+      "THREAD:THRECEIVE": 15422,
+      "INTERRUPT:INT_DELIVER": 15269,
+      "THREAD:THREPLY": 14889,
+      "THREAD:THNANOSLEEP": 8772,
+      "SYSTEM:TIMER": 8772,
+      "SYSTEM:MMAP": 958,
+      "CONTROL:TIME": 555,
+      "CONTROL:BUFFER": 519,
+      "THREAD:THTRACEBUFFER": 519,
+      "CONTROL:BUFFER_END": 519,
+      "THREAD:THMUTEX": 438,
+      "THREAD:THDEAD": 407,
+      "THREAD:THMUON_MUTEX": 353,
+      "THREAD:THCREATE": 281,
+      "SYSTEM:MUNMAP": 224,
+      "THREAD:THDESTROY": 221,
+      "THREAD:THJOIN": 113,
+      "SYSTEM:MAPNAME_64": 30,
+      "SYSTEM:PATHMGR_OPEN": 28,
+      "SYSTEM:IST_ATTACH": 9,
+      "THREAD:THSEM": 7,
+      "THREAD:THSIGSUSPEND": 5,
+      "THREAD:THSEND_NOTIFY": 1,
+      "THREAD:THSIGWAITINFO": 1
+    },
+    "interrupt_count": 15269,
+    "interrupt_rate_hz": 1272.4,
+    "preemption_count": 46205,
+    "preemption_rate_hz": 3850.35,
+    "thread_switch_count": 138988,
+    "thread_switch_rate_hz": 11582.14,
+    "ipi_count": 71539,
+    "ipi_rate_hz": 5961.48,
+    "interrupts": {
+      "count": 0,
+      "gap_us": {}
+    },
+    "per_cpu": {
+      "1": 115696,
+      "0": 197852,
+      "2": 41826,
+      "5": 27934,
+      "3": 35532,
+      "4": 30300
+    }
+  },
+  "ctrl_table": "| phase | prio | cpu | periode(us) | cycles | depassements | jitter min(us) | jitter moy(us) | jitter p99(us) | jitter max(us) | travail max(us) |\n|---|---|---|---|---|---|---|---|---|---|---|\n| idle | 63 | 0 | 1000.0 | 15000 | 40 | 167.0 | 313.0 | 336.2 | 10161.9 | 34.2 |\n| llm_isolated | 63 | 0 | 1000.0 | 38000 | 591 | 2.7 | 1055.2 | 2268.0 | 85710.1 | 48.5 |\n| llm_shared | 10 | -1 | 1000.0 | 18000 | 6072 | 18.5 | 1126.5 | 3589.4 | 5020.9 | 15.8 |",
+  "probe_table": "| phase | threads | tokens | chargement(s) | generation(s) | debit(t/s) | lat min(ms) | lat moy(ms) | lat p99(ms) | lat max(ms) |\n|---|---|---|---|---|---|---|---|---|---|\n| llm | 5 | 300 | 1.16 | 21.88 | 13.71 | 60.39 | 69.94 | 92.03 | 111.04 |\n| llm | 6 | 200 | 0.97 | 12.73 | 15.71 | 55.55 | 59.18 | 75.06 | 90.39 |",
+  "trace_table": "| evenement (classe:evenement) | nombre |\n|---|---|\n| THREAD:THRUNNING | 138988 |\n| THREAD:THREADY | 124096 |\n| THREAD:THINTR | 46205 |\n| SYSTEM:SEND_IPI_64 | 40610 |\n| SYSTEM:IPI_64 | 30929 |\n| THREAD:THRECEIVE | 15422 |\n| INTERRUPT:INT_DELIVER | 15269 |\n| THREAD:THREPLY | 14889 |\n| THREAD:THNANOSLEEP | 8772 |\n| SYSTEM:TIMER | 8772 |\n| SYSTEM:MMAP | 958 |\n| CONTROL:TIME | 555 |\n| CONTROL:BUFFER | 519 |\n| THREAD:THTRACEBUFFER | 519 |\n| CONTROL:BUFFER_END | 519 |\n\n interruptions: 15269 | preemptions: 46205 | duree trace: 12.000 s",
+  "files": [
+    "REPORT.md",
+    "report.json",
+    "serial-rt.log",
+    "trace-metrics.json",
+    "trace.kev",
+    "trace.txt",
+    "docs/REAL-TIME-PROOF.md"
+  ]
+}
