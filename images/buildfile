@@ -1,0 +1,187 @@
+# buildfile — IFS image for Cadence on QNX Neutrino 8.0 (x86_64).
+#
+# Built by images/build-image.sh, which substitutes the @...@ placeholders
+# below with real absolute paths (SDK location, model file, cadence binaries).
+# The resolved buildfile is written next to this one as "buildfile.resolved".
+#
+# Layout of the image:
+#   /proc/boot/...   everything shipped in the IFS itself
+#   /model/...       the GGUF model, on a separate qnx6 filesystem (disk image)
+#
+# ---------------------------------------------------------------------------
+# Gotchas encoded here (see docs/BUILD.md for the full list):
+#
+#  * toybox links against libfsnotify.so.1, which lives in <target>/lib and
+#    NOT in <target>/usr/lib. With [+optional] a wrong path is skipped
+#    silently and every toybox applet then fails with "cannot execute".
+#    Same story for libz.so.2, which lives in usr/lib.
+#
+#  * io-blk.so and fs-qnx6.so are driver modules: they must be reachable both
+#    through the "lib" and the "lib/dll" directories of the image.
+#
+#  * QNX 8.0 has no devb-urandom driver. Entropy comes from the "random"
+#    resource manager, which needs the QNX Cryptography Library to be
+#    configured. qcrypto.conf maps the "random" tag onto the OpenSSL 3 plugin
+#    (libqcrypto-openssl-3.so) that ships with the SDP.
+#
+#  * ldqnx-64.so.2 is the ELF interpreter of every target binary. It must be
+#    present under its absolute path /usr/lib/ldqnx-64.so.2, hence the
+#    procmgr_symlink below.
+# ---------------------------------------------------------------------------
+
+[search=.:@QNX_TARGET@:@QNX_TARGET@/boot/sys:]
+
+[+dupignore]
+[+optional]
+
+[uid=0 gid=0 dperms=0555 perms=0555]
+
+[image=700m]
+
+# --- boot ------------------------------------------------------------------
+[virtual=x86_64,multiboot ] boot = {
+    startup-x86 -D8250..115200 -zz -f 0,0,1000M
+    PATH=/proc/boot:/bin:/system/bin
+    LD_LIBRARY_PATH=/proc/boot:/system/lib:/system/lib/dll
+    [+keeplinked uid=0 gid=0 perms=0700 ] CONFIG_PATH=/proc/boot:/system/etc procnto-smp-instr -mr -d 022 -u 066 -F 2000
+}
+
+# --- startup script --------------------------------------------------------
+[+script] startup-script = {
+    # ksh as /bin/sh and /bin/ksh: the IFS has no /bin directory.
+    # NOTE: the symlink source path must be ABSOLUTE. The relative form
+    # ("../../proc/boot/...") makes procnto resolve it against the current
+    # prefix and the loader cannot find ldqnx-64.so.2 any more, which breaks
+    # every dynamically linked binary in the guest.
+    procmgr_symlink /proc/boot/ksh /bin/sh
+    procmgr_symlink /proc/boot/ksh /bin/ksh
+    procmgr_symlink /proc/boot/ldqnx-64.so.2 /usr/lib/ldqnx-64.so.2
+
+    # core utilities
+    procmgr_symlink /proc/boot/pidin /bin/pidin
+    procmgr_symlink /proc/boot/mount /bin/mount
+    procmgr_symlink /proc/boot/umount /bin/umount
+    procmgr_symlink /proc/boot/slay /bin/slay
+    procmgr_symlink /proc/boot/on /bin/on
+
+    # toybox applets: the QNX toybox is a single binary that dispatches on
+    # argv[0], so each applet is a symlink to it.
+    procmgr_symlink /proc/boot/toybox /bin/cat
+    procmgr_symlink /proc/boot/toybox /bin/echo
+    procmgr_symlink /proc/boot/toybox /bin/ls
+    procmgr_symlink /proc/boot/toybox /bin/head
+    procmgr_symlink /proc/boot/toybox /bin/tail
+    procmgr_symlink /proc/boot/toybox /bin/wc
+    procmgr_symlink /proc/boot/toybox /bin/date
+    procmgr_symlink /proc/boot/toybox /bin/sleep
+    procmgr_symlink /proc/boot/toybox /bin/mkdir
+    procmgr_symlink /proc/boot/toybox /bin/rm
+    procmgr_symlink /proc/boot/toybox /bin/cp
+    procmgr_symlink /proc/boot/toybox /bin/mv
+    procmgr_symlink /proc/boot/toybox /bin/grep
+    procmgr_symlink /proc/boot/toybox /bin/test
+
+    PATH=/proc/boot:/bin:/system/bin
+    LD_LIBRARY_PATH=/proc/boot:/system/lib:/system/lib/dll
+    HOME=/proc/boot
+    TERM=qansi
+
+    # console on the serial line
+    devc-con
+    devc-ser8250 -e
+    waitfor /dev/ser1
+
+    # slogger2 must run before "on": it is the logging server that slog2
+    # clients (on, the drivers) register with.
+    slogger2
+    waitfor /dev/slog2
+
+    # entropy: /dev/urandom comes from the "random" resource manager, which
+    # needs qcrypto + its OpenSSL plugin (see qcrypto.conf below).
+    random &
+    waitfor /dev/urandom
+
+    # the model lives on a separate qnx6 filesystem attached as an IDE disk.
+    # devb-eide only provides the block layer; the Power-Safe driver is
+    # loaded on demand by "mount -t qnx6" (see bench.sh).
+    #
+    # NOTE: the mkifs startup script is NOT a shell. Only four builtins exist
+    # (procmgr_symlink, display_msg, reopen, waitfor); anything else is a
+    # program that must exist in the image. This is why the mount logic lives
+    # in bench.sh, which runs under a real ksh.
+    #
+    # NOTE: "waitfor" takes the timeout as a positional argument AFTER the
+    # pathname: "waitfor /dev/hd0 30". "waitfor -t 30 /dev/hd0" is rejected as
+    # "too many arguments", "waitfor 30 /dev/hd0" as "invalid integer literal".
+    devb-eide cam user=20:20 blk cache=64M,vnode=2000,ncache=2000,commit=low
+    waitfor /dev/hd0 30
+
+    # run the benchmark in the guest
+    on -d -t /dev/ser1 -e HOME=/proc/boot ksh -c /proc/boot/bench.sh
+}
+
+# --- boot chain ------------------------------------------------------------
+multiboot.boot = boot/sys/multiboot.boot
+procnto-smp-instr = boot/sys/procnto-smp-instr
+startup-x86 = boot/sys/startup-x86
+
+# --- console and logging ---------------------------------------------------
+devc-con = sbin/devc-con
+devc-ser8250 = sbin/devc-ser8250
+# slogger2 must be running for "on" (and anything using slog2) to start.
+slogger2 = bin/slogger2
+devb-eide = sbin/devb-eide
+on = bin/on
+ksh = bin/ksh
+mount = bin/mount
+umount = bin/umount
+pidin = bin/pidin
+slay = bin/slay
+toybox = usr/bin/toybox
+random = usr/sbin/random
+
+# driver modules: reachable as lib/<name> and as lib/dll/<name>
+io-blk.so = lib/dll/io-blk.so
+fs-qnx6.so = lib/dll/fs-qnx6.so
+
+# --- C runtime -------------------------------------------------------------
+ldqnx-64.so.2 = usr/lib/ldqnx-64.so.2
+libc.so.6 = lib/libc.so.6
+libsecpol.so.1 = lib/libsecpol.so.1
+libslog2.so.1 = lib/libslog2.so.1
+libcam.so.2 = lib/libcam.so.2
+libm.so.3 = lib/libm.so.3
+libgcc_s.so.1 = lib/libgcc_s.so.1
+libsocket.so.4 = lib/libsocket.so.4
+libc++.so.2 = usr/lib/libc++.so.2
+libssl.so.3 = usr/lib/libssl.so.3
+libcrypto.so.3 = usr/lib/libcrypto.so.3
+libz.so.2 = usr/lib/libz.so.2
+# NOTE: libfsnotify.so.1 is in lib/, not usr/lib/ — toybox fails without it.
+libfsnotify.so.1 = lib/libfsnotify.so.1
+
+# --- entropy / qcrypto -----------------------------------------------------
+libqcrypto.so.1.0 = usr/lib/libqcrypto.so.1.0
+libqcrypto_dyn.so.1.0 = usr/lib/libqcrypto_dyn.so.1.0
+libqh.so.1 = lib/libqh.so.1
+qcrypto-openssl-3.so = lib/dll/qcrypto-openssl-3.so
+qcrypto.conf = ./qcrypto.conf
+
+# --- llama.cpp binaries (built by tools/build-llama.sh) --------------------
+llama-bench = ./llama-bench
+llama-cli = ./llama-cli
+llama-completion = ./llama-completion
+
+# --- Cadence binaries ------------------------------------------------------
+# Added by images/buildfile.gen.sh when they exist in the worktree.
+@CADENCE_BINARIES@
+
+# --- guest benchmark script ------------------------------------------------
+bench.sh = ./bench.sh
+
+# --- model -----------------------------------------------------------------
+# The model is normally carried by a separate qnx6 disk image (see
+# images/make-model-disk.sh) and mounted on /model at boot time. It can also
+# be embedded in the IFS, which makes the image self-contained but ~570 MB
+# bigger. buildfile.gen.sh fills this in when --embed-model is given.
+@MODEL@
