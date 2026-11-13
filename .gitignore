@@ -1,0 +1,9 @@
+build/
+out/
+*.o
+*.so
+*.gguf
+*.ifs
+*.bin
+*.img
+.cache/
