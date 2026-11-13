@@ -36,7 +36,7 @@ echo "--- configuration temps reel du service ---"
 
 echo ""
 echo "--- threads QNX (pidin threads) ---"
-/proc/boot/cadence-cli --threads
+pidin threads
 
 echo ""
 echo "--- question en francais (flux de tokens) ---"

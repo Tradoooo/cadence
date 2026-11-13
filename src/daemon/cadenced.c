@@ -180,25 +180,6 @@ static void on_signal(int sig)
     g_stop = 1; /* the dispatch loop leaves on EINTR */
 }
 
-/*
- * Put the calling thread in SCHED_FIFO.
- *
- * It is called on the main thread before the llama.cpp context is built:
- * the llama.cpp worker threads are created at that moment and they inherit
- * the scheduling of their creator. They must not stay SCHED_OTHER, the
- * SCHED_FIFO inference thread would starve them and the generation would
- * stall (priority inversion).
- */
-static void set_fifo(int prio)
-{
-    struct sched_param sp;
-
-    sp.sched_priority = prio;
-    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
-        log_msg("WARN", "cannot set SCHED_FIFO prio %d on the main thread", prio);
-    }
-}
-
 static int install_handlers(void)
 {
     struct sigaction sa;
@@ -226,7 +207,8 @@ static int push_to_client(cadence_job_t * job, const void * msg, size_t len)
     if (job->coid < 0) {
         return -1;
     }
-    rc = MsgSend(job->coid, msg, len, NULL, 0);
+    /* MsgSendnc: the inference thread must never wait for a slow client. */
+    rc = MsgSendnc(job->coid, msg, len, NULL, 0);
     if (rc == -1) {
         job->client_gone = 1;
         return -1;

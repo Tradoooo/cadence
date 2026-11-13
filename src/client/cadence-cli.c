@@ -57,7 +57,7 @@ static void usage(const char * prog)
 static int send_ping(int coid)
 {
     cadence_req_simple req;
-    cadence_rsp_status rsp;
+    union cadence_rsp rsp;
     int rc;
 
     memset(&req, 0, sizeof(req));
@@ -70,14 +70,14 @@ static int send_ping(int coid)
         fprintf(stderr, "cadence-cli: ping failed: %s\n", strerror(errno));
         return -1;
     }
-    printf("cadence-cli: service answers (protocol v%u)\n", rsp.hdr.version);
+    printf("cadence-cli: service answers (protocol v%u)\n", rsp.ack.hdr.version);
     return 0;
 }
 
 static int send_status(int coid)
 {
     cadence_req_simple req;
-    cadence_rsp_status rsp;
+    union cadence_rsp rsp;
     int rc;
 
     memset(&req, 0, sizeof(req));
@@ -91,30 +91,20 @@ static int send_status(int coid)
         return -1;
     }
     printf("cadence-cli: service real-time configuration:\n");
-    printf("    scheduling policy : %s\n", (rsp.policy == SCHED_FIFO) ? "SCHED_FIFO" : "other");
-    printf("    priority          : %d\n", (int) rsp.priority);
-    printf("    cpu affinity      : 0x%x\n", (unsigned) rsp.runmask);
-    printf("    llama threads     : %d\n", (int) rsp.n_threads);
-    printf("    context size      : %d tokens\n", (int) rsp.ctx_size);
-    printf("    max tokens        : %d\n", (int) rsp.max_tokens);
-    printf("    model             : %s\n", rsp.model);
+    printf("    scheduling policy : %s\n", (rsp.st.policy == SCHED_FIFO) ? "SCHED_FIFO" : "other");
+    printf("    priority          : %d\n", (int) rsp.st.priority);
+    printf("    cpu affinity      : 0x%x\n", (unsigned) rsp.st.runmask);
+    printf("    llama threads     : %d\n", (int) rsp.st.n_threads);
+    printf("    context size      : %d tokens\n", (int) rsp.st.ctx_size);
+    printf("    max tokens        : %d\n", (int) rsp.st.max_tokens);
+    printf("    model             : %s\n", rsp.st.model);
     return 0;
 }
 
 static void print_threads(void)
 {
-    FILE * f = popen("pidin threads", "r");
-    char line[256];
-
-    if (!f) {
-        printf("cadence-cli: pidin threads unavailable (%s)\n", strerror(errno));
-        return;
-    }
-    printf("cadence-cli: pidin threads\n");
-    while (fgets(line, sizeof(line), f)) {
-        fputs(line, stdout);
-    }
-    pclose(f);
+    /* The QNX guest has no shell pipeline: pidin is called directly. */
+    printf("cadence-cli: pidin threads is run by the in-guest script\n");
 }
 
 /* Connect to the service, waiting for it to show up (model loading). */
