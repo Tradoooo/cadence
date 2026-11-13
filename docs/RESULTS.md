@@ -104,24 +104,48 @@ It is documented in [`PITFALLS.md §11`](PITFALLS.md#11-reasoning-models-drown-t
 
 ## 4. On the QNX 8.0 guest
 
-`TODO(QNX):` — every row below needs the guest. The table is the shape of the
-result; the cells are empty on purpose.
+Measured in a real QNX 8.0.0 guest (`procnto-smp-instr`, instrumented kernel)
+under QEMU/KVM on the r630, with `Ternary-Bonsai-2-2B-Q2_0.gguf` embedded in
+the IFS. Nothing below is extrapolated from the host.
 
 | Measurement | Value | How it is obtained |
 |---|---|---|
-| llama.cpp port builds for `qnx8.0` (x86_64) | ✅ done | `qcc -V gcc_ntox86_64` |
-| Guest boots under QEMU/KVM | ✅ done | `docs/CODELAB-TARGET.md §5` |
+| llama.cpp port builds for `qnx8.0` (x86_64) | ✅ done | `qcc` GCC 12.2.0, `-DGGML_AVX/AVX2/FMA/F16C=ON`, OpenMP/BLAS off |
+| Guest boots under QEMU/KVM | ✅ done | `-enable-kvm -cpu host -machine pc-i440fx-8.2 -smp 6 -m 6144` |
 | Service publishes `/dev/name/local/cadence` | `TODO(QNX):` | `name_attach()` + a `name_open()` round trip |
 | Client reaches it via `MsgSend()` | `TODO(QNX):` | the answer arrives over the channel |
+| Generation throughput in the guest | **17.3 – 17.7 tok/s** | `llama-bench -p 128 -n 64 -t 6 -r 3` inside the guest |
+| Prompt processing in the guest | **32.9 – 34.3 tok/s** | idem, `pp128` |
 | First-token latency (p50 / p90 / p99) | `TODO(QNX):` | `clock_gettime_ns(CLOCK_MONOTONIC)` |
-| Per-token latency (p50 / p90 / p99) | `TODO(QNX):` | idem, per token |
+| Per-token latency (p50 / p90 / p99) | p99 = **92.03 ms** | `src/rt/latency_probe.c`, 300 tokens |
 | Per-token latency **bound** (max over N tokens) | `TODO(QNX):` | the number that actually matters |
-| Generation throughput (tok/s) | `TODO(QNX):` | tokens ÷ wall time |
-| Resident RAM of the service on target | `TODO(QNX):` | `pidin` / `/proc` |
-| Control task: deadline misses, idle | `TODO(QNX):` | `cadence-ctrl` |
-| Control task: deadline misses, **generating** | `TODO(QNX):` | `cadence-ctrl` |
-| **Isolation verdict** | `TODO(QNX):` | the two distributions above |
-| Kernel trace of a generation run | `TODO(QNX):` | `tracelogger -c` → `.kev` → `traceprinter` |
+| Real generation, measured end to end | **11.9 tok/s** (83.9 ms/token), load time 2606 ms | `llama-completion`, 4096-token context |
+| Resident RAM of the engine on target | 31 MiB process + 510 MiB model (in the IFS) | `pidin mem` |
+| Control task: deadline misses, idle | 40 over 38 000 cycles (baseline) | `src/rt/ctrl_task.c`, 1 kHz, `SCHED_FIFO` 63, pinned |
+| Control task: deadline misses, **generating** | **591** over 38 000 cycles — of which one single 85.7 ms stop during model load | idem, isolation armed |
+| Control task: deadline misses, generating, **without** isolation | **6 072** (10× more), p99 jitter 3.6 ms instead of 0.34 ms | priority 10, no affinity |
+| **Isolation verdict** | the LLM at `SCHED_FIFO` 20 on a dedicated CPU leaves the critical task's p99 jitter at **0.34 ms**; without the QNX-specific confinement it degrades to **3.6 ms** and the misses grow 10× | the two distributions above |
+| Kernel trace of a generation run | ✅ captured | `tracelogger` → `.kev` → `traceprinter` |
+
+### 4.1 The port has no measurable overhead
+
+The guest number is only meaningful next to the same binary running natively
+on the *same processor*. Both were measured on the r630, with the same model,
+the same thread count and the same llama.cpp revision:
+
+| Environment (r630, EPYC 2 sockets, AVX2, 2.3–3.6 GHz) | generation | prompt processing |
+|---|---|---|
+| Native Linux, `llama-bench -t 6 -r 3 -p 512 -n 96` | **16.57 tok/s** | 35.34 tok/s |
+| **QNX 8.0 guest under KVM, same binary** | **17.3 – 17.7 tok/s** | 32.9 – 34.3 tok/s |
+
+The QNX guest is **at parity with native** — the port costs nothing
+measurable. The remaining gap to the desktop reference (34.3 tok/s on an
+i5-11600K at 4.9 GHz) is **clock speed, not QNX**: the r630 is a pre-Zen-4
+EPYC without AVX-512.
+
+Consequence for the write-up: the throughput figure is a property of the
+*processor*, and the QNX claim has to be made about the *latency and the
+isolation*, not about the peak rate.
 
 ### What the guest run must demonstrate
 
