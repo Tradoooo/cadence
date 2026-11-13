@@ -28,7 +28,9 @@
      VAR_LIVE_BASE : URL de base de la vitrine. Vide par défaut => panneau d'aide.
      On la lit depuis l'URL du site (?live=http://127.0.0.1:8080) pour pouvoir
      brancher une vitrine sans reconstruire le site. */
-  const DEFAULT_LIVE = "";
+  /* L'invité QNX 8.0 de Cadence, en direct, exposé par tailscale funnel
+     sur le r630. URL en HTTPS : aucun problème de contenu mixte. */
+  const DEFAULT_LIVE = "https://r630-debian.tail3a8bdf.ts.net:8095";
   const params = new URLSearchParams(location.search);
   const BASE = (params.get("live") || DEFAULT_LIVE).replace(/\/+$/, "");
 

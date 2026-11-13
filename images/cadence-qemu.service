@@ -1,0 +1,20 @@
+[Unit]
+Description=Invite QNX 8.0 — Cadence (QEMU/KVM)
+After=network.target
+
+[Service]
+Type=simple
+# L'IFS embarque déjà le modèle (510 Mo) et le démon cadenced : pas de disque
+# à monter, pas de montage réseau. Le service garde l'invité en vie.
+ExecStart=%h/qnx-cadence-live/guest-cadence.sh \
+    --ifs %h/qnx-cadence/img/ifs-cadence.bin \
+    --serie %h/qnx-cadence-live/serial.log \
+    --moniteur %h/qnx-cadence-live/mon.sock \
+    --memoire 6144 --smp 6 \
+    --qemu %h/bin/qemu-system-x86_64
+Restart=always
+RestartSec=10
+KillMode=mixed
+
+[Install]
+WantedBy=default.target

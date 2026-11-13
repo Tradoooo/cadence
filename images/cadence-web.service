@@ -1,0 +1,23 @@
+[Unit]
+Description=Vitrine HTTP de l'invite QNX 8.0 — Cadence (ecran VGA, console serie, touches)
+After=cadence-qemu.service
+
+[Service]
+Type=simple
+Environment=QNX_EMS_PORT=8095
+Environment=QNX_EMS_HOST=0.0.0.0
+Environment=QNX_EMS_TITRE=Cadence — invite QNX 8.0 (KVM)
+Environment=QNX_EMS_NOTE=invite QNX 8.0 : ecran VGA en direct, console serie, injection de touches
+Environment=QNX_EMS_SERIE=/home/baptiste/qnx-cadence-live/serial.log
+Environment=QNX_EMS_MON=/home/baptiste/qnx-cadence-live/mon.sock
+Environment=QNX_EMS_PPM=/home/baptiste/qnx-cadence-live/vga.ppm
+Environment=QNX_EMS_UNITE=cadence-qemu.service
+Environment=QNX_EMS_BOOT_S=90
+Environment=QNX_EMS_IDLE_MIN=86400
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 %h/qnx-emu/web.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
