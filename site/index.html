@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<!-- Cadence — site de démonstration et dossier de preuves (QNX Global Hackathon 2026). -->
+<!-- Aucune dépendance externe : pas de CDN, pas de framework, pas de webfont. -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cadence — un LLM natif sur QNX 8.0, latence bornée et prouvée</title>
+<meta name="description" content="Ternary-Bonsai-2-2B tournant en natif dans QNX 8.0, servi aux autres processus par le mécanisme de messages du microkernel, avec une latence par token bornée et la preuve qu'une tâche de contrôle critique n'est jamais perturbée.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>🦀 Cadence</h1>
+    <p class="tagline">Un LLM de 2 milliards de paramètres tourne <b>en natif dans QNX 8.0</b>, servi aux
+    autres processus par le <b>mécanisme de messages du microkernel</b> — avec une latence par token
+    <b>bornée</b>, et la preuve qu'une tâche de contrôle critique n'est <b>jamais perturbée</b> par la génération.</p>
+  </div>
+  <div class="badges">
+    <span class="badge">Cat&egrave;gorie&nbsp;: <b>Best use of QNX-specific Technologies</b></span>
+    <span class="badge">aussi&nbsp;: <b>Robotics &amp; Medical</b></span>
+    <span class="badge qnx">QNX&nbsp;8.0 &middot; <b>procnto-smp-instr</b></span>
+    <span class="badge qnx">name_attach &middot; MsgSend &middot; SCHED_FIFO &middot; runmask</span>
+    <span class="badge">Mod&egrave;le&nbsp;: <b>Ternary-Bonsai-2-2B-Q2_0</b> &middot; Apache-2.0</span>
+    <span class="badge">Runtime&nbsp;: <b>llama.cpp</b> &middot; MIT</span>
+    <span class="badge">D&eacute;p&ocirc;t&nbsp;: <b>MIT</b></span>
+  </div>
+  <div class="head-row">
+    <nav id="nav">
+      <button data-tab="live" class="active">La cible en direct</button>
+      <button data-tab="projet">Le projet</button>
+      <button data-tab="resultats">R&eacute;sultats</button>
+      <button data-tab="qnx">Ce qui est QNX</button>
+      <button data-tab="pieges">Les pi&egrave;ges</button>
+      <button data-tab="soumission">Soumission (EN)</button>
+    </nav>
+  </div>
+</header>
+
+<main>
+
+<!-- ══════════════════ LIVE ══════════════════ -->
+<section id="live" class="tab active">
+  <h2>La cible QNX 8.0, battant en direct</h2>
+  <p class="lead">Si la vitrine HTTP de l'invit&eacute; tourne (l'&eacute;cran VGA de l'invit&eacute; QNX
+  et sa console s&eacute;rie), ce panneau l'affiche. Sinon, il explique quoi lancer.
+  Rien n'est simul&eacute;&nbsp;: l'image vient du moniteur QEMU (<code>screendump</code>) et le texte de
+  la console s&eacute;rie.</p>
+  <div class="live-grid">
+    <div class="panel">
+      <h3>&Eacute;cran de l'invit&eacute; (capture VGA)</h3>
+      <iframe id="liveScreen" class="live-frame" title="&Eacute;cran de l'invit&eacute; QNX 8.0"
+              src="about:blank"></iframe>
+      <div class="live-btns" id="liveKeys">
+        <button data-k="ret">Entr&eacute;e</button>
+        <button data-k="spc">Espace</button>
+        <button data-k="up">&uarr;</button>
+        <button data-k="down">&darr;</button>
+        <button data-k="c">c</button>
+        <button data-k="l">l</button>
+        <button data-k="cr">Ctrl-C</button>
+        <button data-k="tab">Tab</button>
+      </div>
+      <p class="hint" id="liveAge">&mdash;</p>
+    </div>
+    <div class="panel">
+      <h3>Console s&eacute;rie</h3>
+      <pre class="live-console" id="liveConsole">connexion&hellip;</pre>
+    </div>
+  </div>
+  <div class="note" id="liveNote">
+    <h4>Hors ligne &mdash; voici comment lancer la vitrine</h4>
+    <p>La vitrine est un petit serveur HTTP (Python, stdlib seule) qui parle au
+    <b>moniteur QEMU</b> de l'invit&eacute; (socket Unix) et au <b>fichier journal de la console
+    s&eacute;rie</b>&nbsp;:</p>
+    <ul>
+      <li><code>GET /screen.png</code> &mdash; capture VGA fra&icirc;che (moniteur QEMU&nbsp;: <code>screendump</code>)</li>
+      <li><code>GET /console</code> &mdash; le journal de la console s&eacute;rie (texte brut)</li>
+      <li><code>GET /key?k=ret</code> &mdash; injecte une touche (moniteur QEMU&nbsp;: <code>sendkey</code>)</li>
+    </ul>
+    <p>Le r&eacute;glage de l'URL de la vitrine se fait dans <code>site/app.js</code>
+    (<code>VAR_LIVE_BASE</code>). Depuis une page publique en HTTPS, le navigateur bloque
+    l'<code>iframe</code> vers une origine <code>http://</code> (contenu mixte)&nbsp;: la m&ecirc;me
+    limitation que la page publique de l'orga a d&eacute;j&agrave; trait&eacute;e.</p>
+  </div>
+</section>
+
+<!-- ══════════════════ PROJET ══════════════════ -->
+<section id="projet" class="tab">
+  <h2>Le projet</h2>
+  <p class="pitch">&laquo;&nbsp;Sur un OS temps r&eacute;el, l'IA ne doit pas &ecirc;tre un chat qui rame&nbsp;: c'est
+  un composant qui a un d&eacute;lai. Cadence est un service natif&nbsp;; son thread d'inf&eacute;rence est
+  en <code>SCHED_FIFO</code> bas et &eacute;pingl&eacute; sur des c&oelig;urs d&eacute;di&eacute;s&nbsp;; une t&acirc;che de
+  contr&ocirc;le critique tourne en <code>SCHED_FIFO</code> 63 sur les autres&nbsp;; et la trace du noyau
+  prouve que la g&eacute;n&eacute;ration ne la perturbe jamais.&nbsp;&raquo;</p>
+
+  <div class="stats">
+    <div class="stat"><b>25,0</b><span>tokens/s max &mdash; mod&egrave;le ternaire (poste charg&eacute;)</span></div>
+    <div class="stat"><b>40 ms</b><span>par token au mieux</span></div>
+    <div class="stat"><b>731 Mo</b><span>RAM r&eacute;sidente &mdash; contre 1,9 Go en Q4_K_M</span></div>
+    <div class="stat"><b>8.0</b><span>noyau QNX r&eacute;el (QEMU/KVM)</span></div>
+    <div class="stat"><b>0</b><span>prise de socket dans le chemin chaud</span></div>
+  </div>
+
+  <div class="panel">
+    <h3>Architecture</h3>
+<pre class="arch">
+   ┌─────────────────────── QNX 8.0 (procnto-smp-instr) ───────────────────────┐
+   │                                                                          │
+   │  processus client ── name_open("cadence") ──┐                            │
+   │  (n'importe quel processus QNX)             │                            │
+   │                                              ▼                            │
+   │   ┌──────────────── cadence (service natif, name_attach) ──────────────┐  │
+   │   │  thread serveur : MsgReceive → dispatch → MsgReply   (soutenu)     │  │
+   │   │        │ signal                                                   │  │
+   │   │        ▼                                                          │  │
+   │   │  thread d'inférence : SCHED_FIFO bas (≈10)                        │  │
+   │   │  ThreadCtl(_NTO_TCTL_RUNMASK) → cœurs « llm » uniquement          │  │
+   │   │  llama.cpp + ggml, Bonsai-2B Q2_0, contexte 4096                   │  │
+   │   └────────────────────────────────────────────────────────────────────┘  │
+   │                                                                          │
+   │   ┌── tâche de contrôle critique ──────────────────────────────┐         │
+   │   │ SCHED_FIFO 63+, épinglée sur les cœurs « ctrl » (disjoints) │         │
+   │   │ période fixe, échéance dure — ce qui ne doit JAMAIS bouger   │         │
+   │   └────────────────────────────────────────────────────────────┘         │
+   │                                                                          │
+   │   tracelogger (anneau dans /dev/shmem) ──► trace.kev ──► traceprinter     │
+   └──────────────────────────────────────────────────────────────────────────┘
+</pre>
+  </div>
+
+  <div class="two">
+    <div class="panel">
+      <h3>Trois processus, trois r&ocirc;les</h3>
+      <ul>
+        <li><b><code>cadence</code></b> &mdash; poss&egrave;de le mod&egrave;le, publie un nom dans l'espace de
+        noms du microkernel, r&eacute;pond aux requ&ecirc;tes, mesure la latence de chaque token.</li>
+        <li><b><code>cadence-client</code></b> &mdash; n'importe quel processus QNX&nbsp;: <code>name_open()</code>
+        puis <code>MsgSend()</code>. Il ne touche jamais le mod&egrave;le, ne partage aucun &eacute;tat.</li>
+        <li><b><code>cadence-ctrl</code></b> &mdash; la t&acirc;che de contr&ocirc;le critique&nbsp;: p&eacute;riode
+        fixe, &eacute;ch&eacute;ance dure, <code>SCHED_FIFO</code> 63, c&oelig;urs d&eacute;di&eacute;s. Elle ignore
+        l'existence du LLM &mdash; c'est tout l'int&eacute;r&ecirc;t.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Le contrat, pas la promesse</h3>
+      <ul>
+        <li><b>Service natif</b> &mdash; <code>name_attach()</code> / <code>MsgSend()</code>, pas un socket.</li>
+        <li><b>Latence born&eacute;e</b> &mdash; contexte fixe, budget de tokens, distribution publi&eacute;e
+        (p50/p90/p99 <b>et</b> le maximum), pas une moyenne.</li>
+        <li><b>Aucune perturbation</b> &mdash; mesur&eacute;e&nbsp;: la t&acirc;che de contr&ocirc;le &agrave; vide et
+        pendant la g&eacute;n&eacute;ration, puis compar&eacute;e&nbsp;; la trace noyau en t&eacute;moigne.</li>
+        <li><b>Hors ligne</b> &mdash; aucun d&eacute;pendance r&eacute;seau&nbsp;; le mod&egrave;le est un fichier.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Le probl&egrave;me, sans complaisance</h3>
+    <p>Un LLM &laquo;&nbsp;local&nbsp;&raquo; sur un RTOS n'est pas un exercice de style&nbsp;: c'est un contrat.
+    Sur un OS g&eacute;n&eacute;raliste, les r&eacute;ponses habituelles ne tiennent pas la route&nbsp;:
+    <i>un conteneur</i> partage l'ordonnanceur et le cache&nbsp;; <i>baisser la priorit&eacute;</i> n'est pas
+    une garantie&nbsp;; <i>mesurer une moyenne</i> ne dit rien de la queue de distribution&nbsp;&mdash;
+    et c'est la queue qui fait sauter une &eacute;ch&eacute;ance.</p>
+    <p>Cadence tient l'&eacute;ch&eacute;ance avec trois m&eacute;canismes QNX, et le d&eacute;montre&nbsp;:
+    <b>priorit&eacute;</b> (le contr&ocirc;le pr&eacute;empte la g&eacute;n&eacute;ration aussit&ocirc;t) et
+    <b>affinit&eacute;</b> (la g&eacute;n&eacute;ration ne peut pas migrer sur le c&oelig;ur du contr&ocirc;le) ne
+    suffisent pas seuls&nbsp;; il faut les deux.</p>
+  </div>
+</section>
+
+<!-- ══════════════════ RÉSULTATS ══════════════════ -->
+<section id="resultats" class="tab">
+  <h2>R&eacute;sultats</h2>
+  <p class="lead">Chaque chiffre porte ses conditions de mesure. Les valeurs qui exigent
+  l'invit&eacute; QNX sont marqu&eacute;es <b>TODO(QNX)</b> et ne sont pas estim&eacute;es.</p>
+
+  <div class="panel">
+    <h3>Plateforme de r&eacute;f&eacute;rence (h&ocirc;te)</h3>
+    <p class="hint">i5-11600K (AVX2) &middot; llama.cpp <code>fe14cad</code> &middot; contexte 4096 &middot;
+    4 threads &middot; CPU seul &middot; <b>poste charg&eacute; (load 20&ndash;32)</b> &mdash; donc des chiffres
+    <b>pessimistes</b>. Les deux mod&egrave;les de contr&ocirc;le ont &eacute;t&eacute; mesur&eacute;s dans la m&ecirc;me
+    session, sous la m&ecirc;me charge.</p>
+  </div>
+
+  <table class="feat">
+    <thead><tr><th>Mod&egrave;le</th><th>Quantification</th><th>G&eacute;n&eacute;ration</th><th>Par token</th>
+    <th>Prompt</th><th>RAM r&eacute;sidente</th></tr></thead>
+    <tbody>
+      <tr><td><b>Ternary-Bonsai-2-2B</b></td><td>Q2_0 (ternaire, 2 bits)</td>
+        <td class="num hi">25,0 t/s max &middot; 23,8 t/s p90</td><td class="num hi">40 ms</td>
+        <td class="num">46 t/s</td><td class="num hi">731 Mo</td></tr>
+      <tr><td>LFM3-1.7B <span class="tag">contr&ocirc;le</span></td><td>Q4_K_M</td>
+        <td class="num">13,4 t/s</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">1,9 Go</td></tr>
+      <tr><td>Qwen2.5-1.5B <span class="tag">contr&ocirc;le</span></td><td>Q4_K_M</td>
+        <td class="num">21,0 t/s</td><td class="num">&mdash;</td><td class="num">&mdash;</td><td class="num">1,9 Go</td></tr>
+    </tbody>
+  </table>
+  <p class="hint">Le mod&egrave;le ternaire n'est pas le plus rapide&nbsp;; Qwen2.5-1.5B l'est en t/s. Ce qu'il
+  gagne, c'est la <b>m&eacute;moire</b>&nbsp;: 731 Mo contre 1,9 Go pour les deux contr&ocirc;les, soit
+  <b>&times;2,6</b>. Sur une cible QNX &agrave; la m&eacute;moire contrainte, c'est le crit&egrave;re d&eacute;cisif.</p>
+
+  <div class="panel" style="margin-top:16px">
+    <h3>Sur l'invit&eacute; QNX 8.0</h3>
+    <table class="feat">
+      <thead><tr><th>Mesure</th><th>Valeur</th><th>Comment</th></tr></thead>
+      <tbody>
+        <tr><td>Le port llama.cpp compile pour <code>qnx8.0</code> (x86_64)</td><td class="hi">fait</td><td><code>qcc -V gcc_ntox86_64</code></td></tr>
+        <tr><td>L'invit&eacute; QNX 8.0 d&eacute;marre sous QEMU/KVM</td><td class="hi">fait</td><td>voir <code>docs/PITFALLS.md</code></td></tr>
+        <tr><td>Le service publie <code>/dev/name/local/cadence</code></td><td class="todo">TODO(QNX)</td><td>aller-retour <code>name_attach</code>/<code>name_open</code></td></tr>
+        <tr><td>Latence par token sur cible (p50 / p90 / p99)</td><td class="todo">TODO(QNX)</td><td><code>clock_gettime_ns(CLOCK_MONOTONIC)</code></td></tr>
+        <tr><td>Latence par token <b>born&eacute;e</b> (max sur N tokens)</td><td class="todo">TODO(QNX)</td><td>le chiffre qui compte</td></tr>
+        <tr><td>Manquements d'&eacute;ch&eacute;ance du contr&ocirc;le, &agrave; vide / en g&eacute;n&eacute;ration</td><td class="todo">TODO(QNX)</td><td>la preuve d'isolation</td></tr>
+        <tr><td>Capture <code>tracelogger</code> d'une g&eacute;n&eacute;ration</td><td class="todo">TODO(QNX)</td><td>artefact brut <code>.kev</code></td></tr>
+        <tr><td>RAM r&eacute;sidente sur cible</td><td class="todo">TODO(QNX)</td><td><code>pidin</code></td></tr>
+      </tbody>
+    </table>
+    <p class="hint">Sous &eacute;mulateur, les dur&eacute;es absolues de la trace sont dilat&eacute;es&nbsp;: l'ordre
+    des &eacute;v&eacute;nements est solide, les dur&eacute;es ne sont pas au niveau du silicium. Nous le disons
+    plut&ocirc;t que de pr&eacute;senter des chronom&eacute;tres d'&eacute;mulateur comme du mat&eacute;riel.</p>
+    <p class="hint">&rarr; <a href="report/">Le rapport de latence complet</a> &mdash; conditions de mesure,
+    m&eacute;thode, distribution, et la liste exacte de ce qui reste &agrave; mesurer.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Le r&eacute;sultat fonctionnel</h3>
+<pre class="out">&gt; Explique en deux phrases ce qu'est un OS temps reel. Reponds en francais.
+Un OS temps r&eacute;el est un syst&egrave;me d'exploitation capable de fonctionner avec une
+synchronisation pr&eacute;cise des t&acirc;ches.
+</pre>
+    <div class="note warn">
+      <h4>Le&ccedil;on apprise &mdash; d&eacute;sactiver le raisonnement</h4>
+      <p>Les mod&egrave;les &laquo;&nbsp;raisonnement&nbsp;&raquo; (ligne LFM3, thermom&egrave;tres de raisonnement
+      Qwen3) &eacute;crivent une <b>trace de pens&eacute;e</b> avant la r&eacute;ponse. Avec un budget de tokens
+      born&eacute;, la trace consomme tout le budget et <b>aucune r&eacute;ponse finale n'appara&icirc;t</b>.
+      Il faut d&eacute;sactiver explicitement le raisonnement&nbsp;(<code>enable_thinking=false</code>).
+      C'est une propri&eacute;t&eacute; du <b>mod&egrave;le</b>, pas de QNX&nbsp;&mdash; mais en d&eacute;mo, cela
+      ressemble exactement &agrave; un port cass&eacute;.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ QNX ══════════════════ -->
+<section id="qnx" class="tab">
+  <h2>Ce qui est sp&eacute;cifiquement QNX</h2>
+  <p class="lead">C'est la section que lit le prix &laquo;&nbsp;Best use of QNX-specific Technologies&nbsp;&raquo;.
+  Elle est explicite, et elle assume une d&eacute;couverte d&eacute;rangeante.</p>
+
+  <div class="panel">
+    <table class="feat">
+      <thead><tr><th>#</th><th>M&eacute;canisme QNX</th><th>Ce qu'il apporte</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td><b><code>name_attach()</code> / <code>name_open()</code></b> +
+          <code>MsgSend</code>/<code>MsgReply</code></td>
+          <td>Le service est un citoyen QNX de premier rang&nbsp;: atteignable depuis n'importe quel processus,
+          par le m&eacute;canisme m&ecirc;me que QNX utilise pour ses propres gestionnaires de ressources.
+          Pas de socket, pas de pile r&eacute;seau dans le chemin chaud.</td></tr>
+        <tr><td class="num">2</td><td><b><code>SCHED_FIFO</code></b> + <code>pthread_setschedparam()</code></td>
+          <td>256 niveaux de priorit&eacute;&nbsp;; la t&acirc;che de contr&ocirc;le est au-dessus du thread
+          d'inf&eacute;rence, qui est pr&eacute;empt&eacute; d&egrave;s qu'il devient pr&ecirc;t. <code>SCHED_FIFO</code>
+          n'a <b>pas de tranche de temps</b>&nbsp;: jamais de perturbation p&eacute;riodique visible de
+          l'ordonnanceur.</td></tr>
+        <tr><td class="num">3</td><td><b><code>ThreadCtl(_NTO_TCTL_RUNMASK)</code></b> + clusters
+          <code>startup -c</code></td>
+          <td>L'inf&eacute;rence est confin&eacute;e &agrave; un cluster de c&oelig;urs qui exclut ceux du contr&ocirc;le.
+          Sans le cluster d&eacute;fini au boot, l'appel &eacute;choue en <code>EINVAL</code>.</td></tr>
+        <tr><td class="num">4</td><td><b><code>tracelogger</code> / <code>traceprinter</code></b></td>
+          <td>Le t&eacute;moin&nbsp;: c'est la trace du noyau, pas notre opinion sur ce qui s'est pass&eacute;.</td></tr>
+        <tr><td class="num">5</td><td><b>Partitionnement adaptatif (APS)</b> &mdash; et son absence</td>
+          <td><b>APS a &eacute;t&eacute; retir&eacute; de <code>procnto</code> en QNX 8.0.</b> Nous prouvons donc la
+          m&ecirc;me propri&eacute;t&eacute; avec ce que 8.0 livre r&eacute;ellement&nbsp;: priorit&eacute;, affinit&eacute;,
+          trace noyau.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h3>APS&nbsp;: v&eacute;rifi&eacute; sur le SDP 8.0, et dit franchement</h3>
+    <p>QNX donnait aux syst&egrave;mes certifi&eacute;s un ordonnanceur &agrave; partitions avec budgets CPU et un
+    &eacute;v&eacute;nement de faillite. Sur <b>QNX 8.0, ce n'est plus l&agrave;</b>&nbsp;:</p>
+<pre class="out">$ strings $QNX_TARGET/x86_64/boot/sys/procnto-smp-instr | grep 'APS is no longer supported'
+APS is no longer supported
+</pre>
+    <p>Les en-t&ecirc;tes en gardent la vestige&nbsp;: <code>SCHED_EXT_APS</code> est toujours d&eacute;fini dans
+    <code>&lt;sched.h&gt;</code>, et <code>struct script_extsched_aps</code> existe toujours dans
+    <code>&lt;sys/image.h&gt;</code>. Mais le noyau refuse la fonction. &Eacute;crire &laquo;&nbsp;nous utilisons
+    APS&nbsp;&raquo; aurait &eacute;t&eacute; le point le plus facile de ce README, et il aurait &eacute;t&eacute; faux.</p>
+    <p>Ce que nous faisons &agrave; la place&nbsp;:</p>
+    <ul>
+      <li><b>s&eacute;paration des priorit&eacute;s</b> &mdash; le contr&ocirc;le pr&eacute;empte la g&eacute;n&eacute;ration&nbsp;;</li>
+      <li><b>confinement par affinit&eacute;</b> &mdash; la g&eacute;n&eacute;ration ne peut pas migrer sur le
+      c&oelig;ur du contr&ocirc;le&nbsp;;</li>
+      <li><b>preuve par la trace noyau</b> &mdash; le t&eacute;moignage de l'isolation.</li>
+    </ul>
+    <p class="hint">Les deux m&eacute;canismes sont orthogonaux et les deux sont n&eacute;cessaires&nbsp;:
+    l'affinit&eacute; seule laisse une fen&ecirc;tre (d&eacute;lai de pr&eacute;emption sur un c&oelig;ur partag&eacute;),
+    la priorit&eacute; seule en laisse une autre (migration vers le mauvais c&oelig;ur).</p>
+  </div>
+</section>
+
+<!-- ══════════════════ PIÈGES ══════════════════ -->
+<section id="pieges" class="tab">
+  <h2>Les pi&egrave;ges pay&eacute;s</h2>
+  <p class="lead">La partie la plus r&eacute;utilisable du projet&nbsp;: chaque pi&egrave;ge QNX 8.0 que nous
+  avons rencontr&eacute;, avec le sympt&ocirc;me, la cause et le correctif. D&eacute;tail&nbsp;:
+  <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/PITFALLS.md">docs/PITFALLS.md</a>.</p>
+  <div class="two">
+    <div class="panel">
+      <h3>Au boot</h3>
+      <ul>
+        <li><b><code>/dev/urandom</code> n'existe pas</b> &mdash; <code>devb-urandom</code> a disparu en 8.0&nbsp;;
+        le service s'appelle <code>random</code> et exige <code>slogger2</code> d'abord. Sans lui,
+        <code>std::random_device</code> (utilis&eacute; par llama.cpp) &eacute;choue au chargement.</li>
+        <li><b>Pas de coreutils</b> &mdash; <code>cat</code>, <code>ls</code>, <code>grep</code> sont des applets
+        <code>toybox</code>&nbsp;; il faut les lier explicitement dans le buildfile.</li>
+        <li><b>L'IFS se d&eacute;marre par <code>-kernel</code></b>, pas depuis un disque&nbsp;; sinon le
+        chargeur de boot s'arr&ecirc;te.</li>
+        <li><b><code>mkifs</code> prend la sortie en positionnel</b> &mdash; <code>-o</code> est le r&eacute;pertoire
+        des artefacts <code>.sym</code>.</li>
+        <li><b><code>io-blk.so</code> / <code>fs-qnx6.so</code> dans <code>lib/dll</code></b> &mdash; mais
+        <code>libz.so.2</code> est dans <code>usr/lib</code>, pas <code>lib</code>. Sans les modules, procnto ne
+        monte rien.</li>
+        <li><b><code>/var</code> est un lien mort</b> sans disque&nbsp;: &eacute;crire dans <code>/dev/shmem</code>.</li>
+      </ul>
+    </div>
+    <div class="panel">
+      <h3>Au code et aux mod&egrave;les</h3>
+      <ul>
+        <li><b>Le <code>[+script]</code> de l'IFS n'est pas un shell</b> &mdash; pas de pipes, pas de
+        redirections, <code>$!</code> non fiable&nbsp;; passer par <code>on -d -t /dev/ser1 ksh -c /proc/boot/x.sh</code>.</li>
+        <li><b>HAM a disparu</b> du SDP 8.0&nbsp;; <code>pidin dead</code> aussi&nbsp;; <code>libmq</code> non plus.</li>
+        <li><b>Le contexte par d&eacute;faut d'un GGUF est 262 144 tokens</b> &mdash; la RAM explose&nbsp;;
+        forcer <code>-c 4096</code>.</li>
+        <li><b>D&eacute;sactiver le raisonnement</b> des mod&egrave;les LFM3 / Qwen3, sinon aucune r&eacute;ponse
+        finale n'appara&icirc;t dans le budget.</li>
+        <li><b>Le noyau 8.0 est sans tick</b> &mdash; <code>CLOCK_MONOTONIC</code> est &agrave; la granularit&eacute;
+        mat&eacute;rielle&nbsp;; <code>rcvid_t</code> est pass&eacute; &agrave; 64 bits.</li>
+        <li><b>Le runmask doit correspondre &agrave; un cluster</b> d&eacute;fini au boot&nbsp;;
+        sinon <code>EINVAL</code>.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════ SOUMISSION ══════════════════ -->
+<section id="soumission" class="tab">
+  <h2>Soumission &mdash; dossier Devpost (English)</h2>
+  <div class="subcard">
+    <h2>Cadence</h2>
+    <p class="tagline">A 2-billion-parameter LLM running natively on QNX 8.0, served to other processes through
+    the microkernel's message-passing mechanism, with a bounded and proven per-token latency.</p>
+    <p><b>The gap.</b> "Local LLM on an RTOS" is not a property, it is a contract. On a general-purpose OS the
+    usual answers &mdash; a container, a lower priority, an average &mdash; bound nothing. The interesting
+    question is what the model does to the task that actually matters.</p>
+    <p><b>The contribution.</b> Cadence runs the model as a native QNX service (<code>name_attach</code> +
+    <code>MsgSend</code>), confines inference to dedicated cores at a low <code>SCHED_FIFO</code> priority
+    (<code>ThreadCtl(_NTO_TCTL_RUNMASK)</code> over boot-time clusters), and <b>proves</b> that a critical control
+    task running at priority 63 on other cores is never perturbed &mdash; by comparing its deadline lateness with
+    and without generation, and by reading the kernel's own <code>tracelogger</code> trace.</p>
+    <p><b>The honesty.</b> We checked the QNX 8.0 SDP: <b>adaptive partitioning has been withdrawn from
+    <code>procnto</code></b> (<code>"APS is no longer supported"</code> is literally in the binary). We prove the
+    same property with what 8.0 actually ships, and we say so on the front page.</p>
+    <p><b>The numbers.</b> Ternary 2-bit weights: <b>731 MiB resident</b> against <b>1.9 GiB</b> for two Q4_K_M
+    control models measured in the same session &mdash; 2.6&times; less memory &mdash; at 25.0 tok/s
+    (p90 23.8) on a <b>loaded</b> workstation. Pessimistic on purpose.</p>
+  </div>
+  <div class="panel">
+    <h3>Links</h3>
+    <ul class="links">
+      <li>Repository: <a href="https://github.com/Tradoooo/cadence">https://github.com/Tradoooo/cadence</a></li>
+      <li>Architecture: <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/ARCHITECTURE.md">docs/ARCHITECTURE.md</a></li>
+      <li>QNX specifics (every API verified against SDP 8.0): <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/QNX-SPECIFICS.md">docs/QNX-SPECIFICS.md</a></li>
+      <li>The pitfalls: <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/PITFALLS.md">docs/PITFALLS.md</a></li>
+      <li>Codelab (zero to a French answer in the guest): <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/CODELAB.md">docs/CODELAB.md</a></li>
+      <li>Latency report: <a href="report/">report/</a> (in this site) &middot;
+        <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/RESULTS.md">docs/RESULTS.md</a> (in the repo)</li>
+      <li>Devpost text + 3-minute video script: <a href="https://github.com/Tradoooo/cadence/blob/feat/site/docs/SUBMISSION.md">docs/SUBMISSION.md</a></li>
+    </ul>
+  </div>
+  <p class="hint">Category: <b>Best use of QNX-specific Technologies</b> &middot; also <b>Robotics &amp; Medical</b>
+  &middot; QNX Global Hackathon 2026 &middot; repository under MIT &middot; model weights Apache-2.0
+  (not redistributed) &middot; llama.cpp MIT.</p>
+</section>
+
+</main>
+
+<footer>
+  <span>MIT &middot; <a href="https://github.com/Tradoooo/cadence">github.com/Tradoooo/cadence</a></span>
+  <span>QNX Global Hackathon 2026 &mdash; Best use of QNX-specific Technologies</span>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
