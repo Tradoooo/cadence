@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<!-- Cadence — rapport de latence. Page autonome : elle embarque les chiffres mesurés
+     et leur méthode, sans dépendance externe. Générée à la main depuis docs/RESULTS.md ;
+     si les deux divergent, c'est docs/RESULTS.md qui fait foi (et il faut corriger ici). -->
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cadence — rapport de latence</title>
+<meta name="description" content="Latence par token mesurée : conditions, méthode, distribution, et ce qui reste à compléter sur la cible QNX 8.0.">
+<link rel="stylesheet" href="../style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>📈 Cadence — rapport de latence</h1>
+    <p class="tagline">Chaque chiffre avec ses conditions de mesure. Ce qui exige la cible QNX est
+    marqué <b>TODO(QNX)</b> — jamais estimé.</p>
+  </div>
+  <div class="head-row">
+    <nav>
+      <a href="../index.html">← Le site</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+<section>
+  <p class="lead">La latence par token n'est pas une vitesse&nbsp;: c'est une distribution, et le
+  nombre qui compte sur un système temps réel est son <b>maximum</b>, pas sa moyenne. Ce rapport
+  donne la méthode, les chiffres mesurés, et la liste exacte de ce qui reste à mesurer.</p>
+
+  <div class="panel">
+    <h3>Conditions de mesure (hôte)</h3>
+    <table class="feat">
+      <thead><tr><th>Élément</th><th>Valeur</th></tr></thead>
+      <tbody>
+        <tr><td>CPU</td><td>Intel Core i5-11600K @ 3,90 GHz (AVX2)</td></tr>
+        <tr><td>Runtime</td><td>llama.cpp, commit <code>fe14cad</code></td></tr>
+        <tr><td>Backend</td><td>CPU seul (<code>-ngl 0</code>), pas de GPU</td></tr>
+        <tr><td>Contexte</td><td><b>4096</b> tokens (jamais le défaut du GGUF&nbsp;: 262 144)</td></tr>
+        <tr><td>Threads</td><td>4</td></tr>
+        <tr><td>Build</td><td><code>-DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=ON -DLLAMA_CURL=OFF -DGGML_OPENMP=ON</code></td></tr>
+        <tr><td><b>État de la machine</b></td><td><b>chargée — load average 20–32</b></td></tr>
+      </tbody>
+    </table>
+    <p class="hint">Donc&nbsp;: des chiffres <b>pessimistes</b>. Une machine au repos de la même classe
+    fait mieux. Nous publions les pessimistes parce que ce sont ceux dont nous avons les artefacts,
+    et parce que les trois modèles ont été mesurés sous la même charge.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Méthode</h3>
+    <ul>
+      <li><b>Débit de génération / latence par token</b>&nbsp;: <code>llama-bench</code>,
+      <code>-t 4 -p 512 -n 128</code>, 5 répétitions&nbsp;; <code>max</code> et <code>p90</code> sur les
+      échantillons par exécution.</li>
+      <li><b>Évaluation de prompt</b>&nbsp;: <code>llama-bench -p 512</code>.</li>
+      <li><b>RAM résidente</b>&nbsp;: ensemble résident du processus pendant la génération.</li>
+      <li><b>Latence par token</b>&nbsp;: <code>1000 / (tokens par seconde)</code>.</li>
+      <li><b>Sur la cible</b>&nbsp;: horodatage par token avec
+      <code>clock_gettime_ns(CLOCK_MONOTONIC)</code> dans le thread d'inférence&nbsp;; le noyau QNX 8.0
+      est <b>sans tick</b>, donc la mesure n'hérite d'aucune quantification d'horloge.</li>
+    </ul>
+  </div>
+
+  <div class="panel">
+    <h3>Chiffres mesurés (hôte)</h3>
+    <table class="feat">
+      <thead><tr><th>Modèle</th><th>Quantif.</th><th>Génération</th><th>Par token</th><th>Prompt</th><th>RAM</th></tr></thead>
+      <tbody>
+        <tr><td><b>Ternary-Bonsai-2-2B</b></td><td>Q2_0 (ternaire, 2 bits)</td>
+          <td class="num hi">25,0 t/s max · 23,8 t/s p90</td><td class="num hi">40 ms</td>
+          <td class="num">46 t/s</td><td class="num hi">731 Mo</td></tr>
+        <tr><td>LFM3-1.7B <span class="tag">contrôle</span></td><td>Q4_K_M</td>
+          <td class="num">13,4 t/s</td><td class="num">—</td><td class="num">—</td><td class="num">1,9 Go</td></tr>
+        <tr><td>Qwen2.5-1.5B <span class="tag">contrôle</span></td><td>Q4_K_M</td>
+          <td class="num">21,0 t/s</td><td class="num">—</td><td class="num">—</td><td class="num">1,9 Go</td></tr>
+      </tbody>
+    </table>
+    <p class="hint">Le modèle ternaire n'est pas le plus rapide en t/s — c'est le plus petit en
+    mémoire&nbsp;: <b>×2,6</b> face aux deux contrôles Q4_K_M. Sur une cible embarquée, c'est le
+    critère décisif.</p>
+  </div>
+
+  <div class="panel">
+    <h3>Ce qui reste à mesurer (cible QNX 8.0)</h3>
+    <table class="feat">
+      <thead><tr><th>Mesure</th><th>Valeur</th><th>Comment</th></tr></thead>
+      <tbody>
+        <tr><td>Latence par token sur cible (p50 / p90 / p99)</td><td class="todo">TODO(QNX)</td><td><code>clock_gettime_ns</code> par token</td></tr>
+        <tr><td>Latence par token <b>bornée</b> (max sur N tokens)</td><td class="todo">TODO(QNX)</td><td>le nombre qui compte</td></tr>
+        <tr><td>Débit de génération sur cible</td><td class="todo">TODO(QNX)</td><td>tokens ÷ temps mural</td></tr>
+        <tr><td>RAM résidente sur cible</td><td class="todo">TODO(QNX)</td><td><code>pidin</code></td></tr>
+        <tr><td>Manquements d'échéance du contrôle, à vide</td><td class="todo">TODO(QNX)</td><td><code>cadence-ctrl</code></td></tr>
+        <tr><td>Manquements d'échéance du contrôle, en génération</td><td class="todo">TODO(QNX)</td><td><code>cadence-ctrl</code></td></tr>
+        <tr><td><b>Verdict d'isolation</b></td><td class="todo">TODO(QNX)</td><td>comparaison des deux distributions</td></tr>
+        <tr><td>Trace noyau d'une génération</td><td class="todo">TODO(QNX)</td><td><code>tracelogger -c</code> → <code>.kev</code> → <code>traceprinter</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note warn">
+    <h4>Limites, dites avant qu'on nous les demande</h4>
+    <ul>
+      <li><b>Sous émulateur, les durées absolues de la trace sont dilatées.</b> La documentation SDP
+      exige que <code>ClockCycles()</code> soit synchronisé entre les CPU pour que
+      <code>tracelogger</code> produise des horodatages significatifs&nbsp;; un émulateur ne le garantit
+      pas. L'<b>ordre</b> des événements est solide&nbsp;; les <b>durées</b> ne sont pas au niveau du
+      silicium.</li>
+      <li><b>Aucun chiffre n'est extrapolé de l'hôte vers l'invité.</b> L'invité sera plus lent
+      (pas de GPU, émulateur, chemin mémoire différent)&nbsp;; ses chiffres propres seront mesurés.</li>
+      <li><b>APS n'existe plus dans QNX 8.0</b> — la preuve d'isolation repose sur la priorité,
+      l'affinité et la trace, pas sur un partitionnement par budget. Voir
+      <a href="https://github.com/Tradoooo/cadence/blob/main/docs/QNX-SPECIFICS.md">docs/QNX-SPECIFICS.md</a>.</li>
+      <li><b>Les modèles à raisonnement noient la réponse</b> sous leur trace de pensée&nbsp;; il faut
+      désactiver le raisonnement (<code>enable_thinking=false</code>) pour obtenir une réponse finale
+      dans le budget de tokens.</li>
+    </ul>
+  </div>
+
+  <p class="hint">Source&nbsp;: <code>docs/RESULTS.md</code> dans le dépôt
+  (<a href="https://github.com/Tradoooo/cadence/blob/main/docs/RESULTS.md">version en ligne</a>).
+  Les artefacts bruts (JSON <code>llama-bench</code>, <code>.kev</code>, distributions du contrôle)
+  sont versés au dépôt sous <code>docs/results/</code> dès qu'ils existent.</p>
+</section>
+</main>
+
+<footer>
+  <span>MIT · <a href="https://github.com/Tradoooo/cadence">github.com/Tradoooo/cadence</a></span>
+  <span>QNX Global Hackathon 2026</span>
+</footer>
+</body>
+</html>

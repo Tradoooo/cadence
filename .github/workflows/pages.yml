@@ -1,0 +1,69 @@
+# Cadence — publication du site statique (site/) sur GitHub Pages.
+#
+# Pas d'étape de build : les pages sont du HTML/CSS/JS écrit à la main, sans
+# dépendance à installer. Ce qui est dans site/ est exactement ce qui est servi.
+#
+# Budget CI (règle user 2026-10-24, ~/Bureau/CI-BUDGET-5MIN.md) :
+# timeout-minutes: 5, concurrency avec cancel-in-progress, checkout avec
+# fetch-depth: 1, et un filtre paths: pour qu'un commit de documentation seule
+# ne redéploie pas le site.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: publish site/ to GitHub Pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Vérifier que le site est cohérent (pas de CDN, pas de dépendance externe)
+        run: |
+          set -eu
+          if grep -rniE 'https?://(cdn|unpkg|jsdelivr|cdnjs|fonts\.googleapis|maxcdn)' site/ ; then
+            echo "::error::le site ne doit pas dépendre d'un CDN externe"
+            exit 1
+          fi
+          echo "OK : aucune ressource externe"
+
+      - name: Vérifier la syntaxe JavaScript du site
+        run: |
+          set -eu
+          if command -v node >/dev/null 2>&1; then
+            node --check site/app.js
+          else
+            echo "node absent : vérification JS ignorée"
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - name: deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
