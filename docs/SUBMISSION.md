@@ -48,9 +48,9 @@ Three parts:
 
 | Part | What it is |
 |---|---|
-| **`cadence`** | A native QNX service. It loads `Ternary-Bonsai-2-2B-Q2_0.gguf` (510 MiB, ternary 2-bit weights) through a QNX port of llama.cpp, publishes itself in the microkernel's pathname space with `name_attach()`, and answers generation requests on a channel. It measures every token's latency and publishes the distribution. |
-| **`cadence-client`** | Any QNX process. It calls `name_open()` to find the service and `MsgSend()` to ask for text. It never touches the model, never opens a socket, and never shares state with the service. |
-| **`cadence-ctrl`** | A critical control task under test: fixed period, hard deadline, `SCHED_FIFO` at priority 63+, pinned by runmask to its own cores. It knows nothing about the LLM. That is the point — if the LLM misbehaved completely, the control task would still meet its deadlines. |
+| **`cadenced`** | A native QNX resource manager. It loads `Ternary-Bonsai-2-2B-Q2_0.gguf` (510 MiB, ternary 2-bit weights) through a QNX port of llama.cpp, publishes the name **`cadence-llm`** in the QNX name service with `name_attach()`, and streams one message per generated token back to the client's own channel. It measures every token's latency server-side and reports the distribution. |
+| **`cadence-cli`** | Any QNX process. It calls `name_open("cadence-llm")` and `MsgSend()` to ask for text, then receives the token stream on its own channel. It never touches the model, never opens a socket, and never shares state with the service. `--ping`, `--status` and `--threads` make the real-time configuration of the service inspectable from the outside. |
+| **`cadence-ctrl`** *(planned)* | A critical control task under test: fixed period, hard deadline, `SCHED_FIFO` at priority 63+, pinned by runmask to its own cores. It knows nothing about the LLM. That is the point — if the LLM misbehaved completely, the control task would still meet its deadlines. |
 
 The isolation is not a promise, it is a **measurement**: the control task
 records the lateness of every period, once at idle and once while the model
@@ -239,7 +239,7 @@ the cluster definition.
 **On screen:** the guest console.
 
 ```sh
-cadence --model /proc/boot/model.gguf -c 4096
+cadenced -m /proc/boot/model.gguf -n cadence-llm -c 4096 -t 4 -P 20 -C 0
 ```
 
 **Voiceover:**
@@ -247,15 +247,15 @@ cadence --model /proc/boot/model.gguf -c 4096
 > space. It is now reachable from any QNX process, the same way QNX's own
 > resource managers are."
 
-**Overlay:** `/dev/name/local/cadence`.
+**Overlay:** `/dev/name/local/cadence-llm`.
 
 ### 1:20–1:50 — A French answer, over `MsgSend`
 
 **On screen:** a *second* terminal into the same guest.
 
 ```sh
-cadence-client --name cadence \
-  --prompt "Explique en deux phrases ce qu'est un OS temps reel. Reponds en francais."
+cadence-cli -M 64 \
+  -p "Quelle est la capitale de la France ? Reponds en francais, en une seule phrase."
 ```
 
 **On screen:** the French answer, printed.

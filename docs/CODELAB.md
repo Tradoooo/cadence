@@ -98,7 +98,7 @@ cd ~/cadence-lab
 > consumes the whole budget and **no final answer appears**. Disable reasoning
 > explicitly (`enable_thinking=false`) or use a non-reasoning checkpoint.
 > This is a *model* property, not a QNX one — but in a demo it looks exactly
-> like a broken port. See [`PITFALLS.md §11`](PITFALLS.md#11-reasoning-models-drown-the-answer--disable-thinking-for-lfm3--qwen).
+> like a broken port. See [`PITFALLS.md §11`](PITFALLS.md#11-reasoning-models-drown-the-answer-disable-thinking).
 
 **Checkpoint:** you should see a French sentence, and the banner should say
 `ftype : Q2_0` and `model_type : qwen35 2B Q2_0`.
@@ -136,42 +136,73 @@ shipping.
 
 ---
 
-## Chapter 2 — The service, on the host first
+## Chapter 2 — Meet the service
 
-The service is a QNX program, but its *logic* is portable. Build it for the
-host first: it is the fastest way to shake out the protocol.
+The service is a QNX resource manager; it cannot run on Linux. But its *wire
+protocol* is a plain C header, and reading it is the fastest way to understand
+what the rest of this codelab builds.
 
 ```sh
-cd ~/cadence-lab
 git clone https://github.com/Tradoooo/cadence.git
 cd cadence
-ls src/ tools/ patches/ images/
+ls src/common/ src/daemon/ src/client/ tools/ docs/
+sed -n '1,60p' src/common/cadence_msg.h
+sed -n '1,90p' docs/PROTOCOL.md
 ```
 
-`TODO(QNX):` the exact host build command once `tools/` is merged (expected:
-`make host` or `python3 tools/build_host.sh`).
+### 2.1 What the two programs are called
 
-Run the service and the client:
+| Program | Role | Where |
+|---|---|---|
+| **`cadenced`** | the service: owns the GGUF, publishes the name `cadence-llm`, pushes one message per token | `src/daemon/` |
+| **`cadence-cli`** | the client: `name_open()` + `MsgSend()`, prints the stream | `src/client/` |
 
-```sh
-# terminal 1
-./build/cadence --model ~/cadence-lab/models/bonsai2/Ternary-Bonsai-2-2B-Q2_0.gguf -c 4096
-# terminal 2
-./build/cadence-client --name cadence \
-    --prompt "Explique en deux phrases ce qu'est un OS temps reel. Reponds en francais."
+`cadenced` options (`cadenced -h`):
+
+```
+-m, --model PATH     GGUF model to serve           (default /proc/boot/model.gguf)
+-n, --name NAME      QNX name service entry        (default cadence-llm)
+-c, --ctx N          context size in tokens        (default 4096)
+-t, --threads N      llama.cpp worker threads      (default 4)
+-P, --prio N         SCHED_FIFO priority of the inference thread (default 20)
+-C, --cpu N          CPU the inference thread is pinned to        (default 0)
+-M, --max-tokens N   default maximum number of tokens (default 128)
+-s, --seed N         sampling seed (0 = random)
 ```
 
-Expected: the service logs that it published its name; the client prints the
-generated French sentence.
+`cadence-cli` options (`cadence-cli -h`):
 
-**Checkpoint:** the client never opens the model file. It only sends a
-message. If you can explain *why* that matters for a real-time system
-(no shared mutable state between the consumer and the consumer's latency
-budget), you have the idea the whole project rests on.
+```
+-p, --prompt TEXT    prompt sent to the service
+-n, --name NAME      QNX name service entry (default cadence-llm)
+-M, --max-tokens N   maximum number of tokens
+-s, --seed N         sampling seed
+    --ping           only check that the service answers
+    --status         print the real-time configuration of the service
+    --threads        print the 'pidin threads' table of the system
+    --wait N         retry for N seconds until the service answers
+    --cat            read a file (the guest has no cat)
+```
+
+### 2.2 Why the generation is asynchronous
+
+Read `docs/PROTOCOL.md` § "Sequence of a generation". The client does not block
+in `MsgSend()` for the whole generation: it gets `CADENCE_RSP_ACCEPTED`
+immediately, then **one message per token** on its own channel, then
+`CADENCE_RSP_DONE` carrying the server-side accounting (`total_ms`,
+`ms_per_token`, `tokens_per_sec`).
+
+That is the design decision that makes the rest of the project possible: the
+latency a consumer feels *is* the per-token latency, and the service measures
+it itself rather than letting the client guess.
+
+**Checkpoint:** you can explain why a synchronous `MsgSend()` returning the
+whole answer would have made the per-token latency unmeasurable, and why the
+client's channel id has to travel inside the request.
 
 ---
 
-## Chapter 3 — Cross-compile for QNX 8.0
+## Chapter 3 — Cross-compile the service and the client for QNX 8.0
 
 ### 3.1 Set up the SDP environment
 
@@ -185,43 +216,73 @@ qcc -V gcc_ntox86_64 --version
 
 Expected: the QNX 8.0 `qcc` version banner.
 
-### 3.2 Build llama.cpp for the target
+### 3.2 llama.cpp, built for the target, as static libraries
 
-llama.cpp is CMake-based and does not know about QNX out of the box. The port
-is in `patches/` of this repository:
+The service links llama.cpp statically. The port produces the archive files
+the build script expects under `$LLAMA_DIR/build-qnx`:
 
-```sh
-cd ~/cadence-lab
-git clone https://github.com/Tradoooo/cadence.git && cd cadence
-git apply patches/llama-qnx8.0.patch      # TODO(QNX): exact patch filename
+```
+build-qnx/common/libllama-common.a
+build-qnx/common/libllama-common-base.a
+build-qnx/src/libllama.a
+build-qnx/ggml/src/libggml.a
+build-qnx/ggml/src/libggml-cpu.a
+build-qnx/ggml/src/libggml-base.a
+build-qnx/vendor/hash/libvendor-hash.a
+build-qnx/vendor/cpp-httplib/libcpp-httplib.a
 ```
 
-Then, with the QNX toolchain:
+`TODO(QNX):` the exact CMake invocation that produced these archives on the
+QNX toolchain (the port work owns that command); document it here so a reader
+can reproduce it from scratch.
+
+### 3.3 Build `cadenced` and `cadence-cli`
+
+The script takes the llama.cpp tree in `LLAMA_DIR` and writes the two QNX ELF
+binaries to `OUT_DIR`:
 
 ```sh
-cd ~/cadence-lab/llama.cpp
-cmake -B build-qnx \
-      -DCMAKE_TOOLCHAIN_FILE=$QNX_SDP/cmake/toolchains/qnx.cmake \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
-cmake --build build-qnx -j"$(nproc)" --target llama-cli
+cd ~/cadence-lab/cadence
+LLAMA_DIR=$HOME/qnx-cadence/llama.cpp \
+OUT_DIR=$HOME/qnx-cadence/out \
+./tools/build-qnx.sh
 ```
 
-`TODO(QNX):` the exact toolchain invocation validated by the port work, and
-the resulting binary size.
+It compiles, in this order:
 
-### 3.3 Check the dynamic dependencies — before you boot anything
+```sh
+qcc -Vgcc_ntox86_64 -Wall -O2 -c src/daemon/cadenced.c    -o cadenced.o
+q++ -Vgcc_ntox86_64 -Wall -O2 -c src/daemon/cadence_llm.cpp -o cadence_llm.o
+q++ -Vgcc_ntox86_64 -o cadenced cadenced.o cadence_llm.o $LIBS
+qcc -Vgcc_ntox86_64 -Wall -O2 -c src/client/cadence-cli.c -o cadence-cli.o
+qcc -Vgcc_ntox86_64 -o cadence-cli cadence-cli.o -lm -lsocket
+```
 
-This is the step that saves the most time. Every library the binary needs
+(`cadenced` is C + one C++ translation unit for the llama.cpp glue, hence
+`q++` for the final link; the client is plain C.)
+
+Expected tail of the output:
+
+```
+== result ==
+cadenced: ELF 64-bit LSB pie executable, x86-64 ...
+cadence-cli: ELF 64-bit LSB pie executable, x86-64 ...
+build-qnx.sh: OK
+```
+
+### 3.4 Check the dynamic dependencies — before you boot anything
+
+This is the step that saves the most time. Every library the binaries need
 must exist in the guest image:
 
 ```sh
-readelf -d build-qnx/bin/llama-cli | grep NEEDED
+readelf -d ~/qnx-cadence/out/cadenced | grep NEEDED
+readelf -d ~/qnx-cadence/out/cadence-cli | grep NEEDED
 ```
 
-Expected (typical): `libc.so.6`, `libm.so.3`, `libgcc_s.so.1`, and possibly
-`libz.so.2` — and **`libz.so.2` lives in `usr/lib/` on the SDP, not `lib/`**.
-Getting that wrong is a silent boot hang.
+Expected (typical): `libc.so.6`, `libm.so.3`, `libgcc_s.so.1`, `libsocket.so.4`,
+and — for the C++ side — `libc++.so.2`, which lives in **`usr/lib/`**, not
+`lib/`. Getting that wrong is a silent boot hang.
 
 **Checkpoint:** list every `NEEDED` entry and, for each one, the exact path
 it will be copied from in the image buildfile.
@@ -230,125 +291,121 @@ it will be copied from in the image buildfile.
 
 ## Chapter 4 — Build the QNX 8.0 guest image
 
-### 4.1 The buildfile
+### 4.1 One command
 
-The guest is an **IFS** (image filesystem), built with `mkifs`. The buildfile
-lives in `images/`. Its essential parts:
+`tools/mkifs.sh` assembles the whole image: `procnto`, `ksh`, the two binaries,
+the boot script, and the GGUF itself.
+
+```sh
+cd ~/cadence-lab/cadence
+MODEL=$HOME/qnx-cadence/Ternary-Bonsai-2-2B-Q2_0.gguf ./tools/mkifs.sh
+```
+
+Expected tail:
+
+```
+== mkifs ==
+-rw-r--r-- 1 ... ifs-cadence.bin
+mkifs.sh: OK
+```
+
+The image is big on purpose — **800 MiB** — because the model travels inside it
+(`model.gguf = $MODEL`). That is what makes the guest self-contained: no disk,
+no shared folder, no network.
+
+### 4.2 The buildfile — what is inside, and why
+
+The script generates `$WORK_DIR/img/buildfile`. The parts worth reading:
 
 ```
 [search=.:$QNX_TARGET/x86_64:$QNX_TARGET/x86_64/boot/sys:]
-
-[image=64m]
-[virtual=x86_64,multiboot] boot = {
-    startup-x86 -D8250..115200 -zz -f 0,0,1000M -c llm:0xf0,ctrl:0x0f
+[uid=0 gid=0 dperms=0555 perms=0555]
+[image=800m]
+[virtual=x86_64,multiboot ] boot = {
+    startup-x86 -D8250..115200 -zz -f 0,0,1000M
     PATH=/proc/boot:/system/bin
     LD_LIBRARY_PATH=/proc/boot:/system/lib:/system/lib/dll
-    [+keeplinked uid=0 gid=0 perms=0700] CONFIG_PATH=/proc/boot:/system/etc \
+    [+keeplinked uid=0 gid=0 perms=0700 ] CONFIG_PATH=/proc/boot:/system/etc \
         procnto-smp-instr -mr -d 022 -u 066 -F 2000
 }
 ```
 
-Two things to notice:
+- `procnto-smp-instr` is the **instrumented** kernel — the one `tracelogger`
+  needs. The 8.0 SDP ships only instrumented kernels, so this costs nothing.
+- **No `-c` cluster definition yet.** The shipped service pins the inference
+  thread with a single-CPU mask (`1 << -C`, default CPU 0), and a
+  single-processor mask always matches the predefined `_cpu-N` cluster. The
+  moment the mask spans several cores, the boot line has to grow
+  `-c llm:0xf0,ctrl:0x0f` — see
+  [`QNX-SPECIFICS.md §3`](QNX-SPECIFICS.md#3-processor-affinity-threadctl_nto_tctl_runmask).
+- `-mr -d 022 -u 066 -F 2000` are procnto's own options and are copied from the
+  QNX demo images; leave them alone unless you know why.
 
-- `-c llm:0xf0,ctrl:0x0f` defines the **clusters** used for processor
-  affinity. Without them, `ThreadCtl(_NTO_TCTL_RUNMASK, …)` fails with
-  `EINVAL`, because a runmask must match a boot-time cluster.
-- `procnto-smp-instr` is the **instrumented** kernel — required for
-  `tracelogger`.
-
-### 4.2 The boot script — and its limits
+### 4.3 The boot script — and its limits
 
 The `[+script]` block is *not* a full shell: no pipes, no redirections, and
-`$!` is unreliable. Put the real logic in a file and launch it with `on`:
+`$!` is unreliable. The script therefore does the minimum and delegates:
 
 ```
 [+script] startup-script = {
     procmgr_symlink /proc/boot/ksh /bin/sh
-    procmgr_symlink /var/tmp /tmp
-    PATH=/proc/boot:/system/bin
-    LD_LIBRARY_PATH=/proc/boot:/system/lib:/system/lib/dll
-    HOME=/proc/boot
-    TERM=qansi
-
+    procmgr_symlink /proc/boot/ksh /bin/ksh
+    procmgr_symlink /proc/boot/ldqnx-64.so.2 /usr/lib/ldqnx-64.so.2
+    procmgr_symlink /proc/boot/toybox /bin/cat
+    procmgr_symlink /proc/boot/toybox /bin/echo
+    procmgr_symlink /proc/boot/toybox /bin/sleep
+    procmgr_symlink /proc/boot/toybox /bin/ls
+    ...
     devc-con
     devc-ser8250 -e
     waitfor /dev/ser1
-
-    slogger2 &                       # slogger2 must run before `random`
-    random -m 0664 &                # publishes /dev/random and /dev/urandom
-    waitfor /dev/urandom
-
-    on -d -t /dev/con1 -e HOME=/proc/boot ksh -l
-    on -d -t /dev/ser1 -e HOME=/proc/boot ksh -l
-    on -d -t /dev/ser1 -e HOME=/proc/boot ksh -c /proc/boot/cadence-demo.sh
+    on -d -t /dev/ser1 -e HOME=/proc/boot ksh -c /proc/boot/run-in-guest.sh
 }
 ```
 
-> **Pitfall:** without `random` running, `/dev/urandom` does not exist and
-> `std::random_device` — used by llama.cpp at load — fails immediately.
-> In QNX 7.x you started `devb-urandom`; in **8.0 that binary is gone** and
-> the service is called `random`, and it needs `slogger2` first. See
-> [`PITFALLS.md §1`](PITFALLS.md#1-devurandom-does-not-exist-unless-you-start-it).
+Everything interesting happens in `tools/run-in-guest.sh`, run by **real ksh**
+through `on` — which is where `$!` is reliable and where you can use a pipe.
 
-### 4.3 The libraries
+### 4.4 The libraries
 
 ```
-# base libraries — from lib/
 libc.so.6     = lib/libc.so.6
 libm.so.3     = lib/libm.so.3
 libgcc_s.so.1 = lib/libgcc_s.so.1
-# but libz comes from usr/lib/ — not lib/
-libz.so.2     = usr/lib/libz.so.2
+libsocket.so.4 = lib/libsocket.so.4
+libc++.so.2   = usr/lib/libc++.so.2     # NOT lib/ — the C++ runtime lives in usr/lib
+libsecpol.so.1 = lib/libsecpol.so.1
+libslog2.so.1  = lib/libslog2.so.1
+libcam.so.2    = lib/libcam.so.2
+```
 
-# loadable resource managers — from lib/dll/
-cam-disk.so   = lib/dll/cam-disk.so
-fs-qnx6.so    = lib/dll/fs-qnx6.so
-io-blk.so     = lib/dll/io-blk.so
+And the toybox applets, linked explicitly (QNX 8.0 has no coreutils):
 
-# toybox applets, linked explicitly
+```
 toybox = usr/bin/toybox
-[type=link] /proc/boot/cat=/proc/boot/toybox
-[type=link] /proc/boot/ls=/proc/boot/toybox
-[type=link] /proc/boot/echo=/proc/boot/toybox
-[type=link] /proc/boot/sleep=/proc/boot/toybox
-[type=link] /proc/boot/mkdir=/proc/boot/toybox
+procmgr_symlink /proc/boot/toybox /bin/cat    # in the startup script
 ```
 
-### 4.4 Build it
+> **Open point, stated honestly.** The shipped boot script does **not** yet
+> start `slogger2` + `random`, so `/dev/urandom` may be absent when the model
+> loads. `std::random_device` survives that by falling back — but if the load
+> fails with an RNG error, that is the cause, and the fix is in
+> [`PITFALLS.md §1`](PITFALLS.md#1-devurandom-does-not-exist-unless-you-start-it).
+> `TODO(QNX):` confirm on the guest whether `random` must be started.
+
+### 4.5 `mkifs` takes its output positionally
+
+The script calls it correctly; if you ever call it by hand, remember:
 
 ```sh
-export QNX_HOST=$QNX_SDP/host/linux/x86_64
-export QNX_TARGET=$QNX_SDP/target/qnx
-cd ~/cadence-lab/cadence
-sh images/build-image.sh ~/cadence-img
+mkifs -v -o "$WORK_DIR" buildfile ifs-cadence.bin
+#            └─ directory for the .sym artefacts
+#                     └─ buildfile
+#                                 └─ output image (POSITIONAL)
 ```
 
-The script does the four steps, in this order (the order matters):
-
-```sh
-# 1/4 compile for the target
-qcc -V gcc_ntox86_64 -Wall -Wextra -Werror -o "$WORK/cadence" src/...
-qcc -V gcc_ntox86_64 -Wall -Wextra -Werror -o "$WORK/cadence-client" src/...
-qcc -V gcc_ntox86_64 -Wall -Wextra -Werror -o "$WORK/cadence-ctrl" src/...
-
-# 2/4 the IFS — the output file is POSITIONAL, not -o
-sed "s|\$QNX_TARGET|$QNX_TARGET|g" images/buildfile > image.resolved
-mkifs -v -o . image.resolved ifs.bin
-ls -l ifs.bin
-
-# 3/4 (optional) a boot partition
-sed "s|\$QNX_TARGET|$QNX_TARGET|g" images/boot_part.build > boot_part.resolved
-mkxfs -t qnx6fsimg -o . boot_part.resolved boot.part
-
-# 4/4 (optional) the disk image
-diskimage -p -s 163840 -c layout.txt -o cadence-disk.img \
-    -b "$QNX_TARGET/x86_64/boot/sys/ipl-diskpc1-nomsg"
-```
-
-> **Pitfall:** `mkifs` takes the output as a **positional** argument:
-> `mkifs [options] [buildfile] [directory] [outputfile]`. `-o` is the
-> directory for the `.sym` artefacts, not the output image.
-
-**Checkpoint:** `ifs.bin` exists and is a few tens of MiB.
+**Checkpoint:** `ifs-cadence.bin` exists and is roughly the size of the model
+plus a few MiB.
 
 ---
+

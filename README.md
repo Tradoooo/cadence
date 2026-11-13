@@ -121,51 +121,48 @@ kernel knows exactly who is talking to whom.
 ## Architecture
 
 ```
-                     ┌──────────────────── QNX 8.0 guest (procnto-smp-instr) ────────────────────┐
-                     │                                                                          │
-  any QNX process   │    name_open("cadence")                                                 │
-  (client)  ────────┼───► coid ──┐                                                            │
-                     │            │                                                            │
-                     │            ▼                                                            │
-                     │   ┌──────────────────────────────────────────────────────┐                │
-                     │   │  cadence — native QNX service (name_attach)          │                │
-                     │   │                                                      │                │
-                     │   │  ┌── server thread ──────────────────────────────┐   │                │
-                     │   │  │ MsgReceive → dispatch → MsgReply            │   │                │
-                     │   │  │ (short, high priority, never blocks on work) │   │                │
-                     │   │  └───────────────┬──────────────────────────────┘   │                │
-                     │   │                  │ signal (condvar / pulse)            │                │
-                     │   │                  ▼                                     │                │
-                     │   │  ┌── inference thread ───────────────────────────┐   │                │
-                     │   │  │ SCHED_FIFO, low priority (e.g. 10)            │   │                │
-                     │   │  │ ThreadCtl(_NTO_TCTL_RUNMASK) → LLM cores only │   │                │
-                     │   │  │ llama.cpp + ggml, Bonsai-2B Q2_0, ctx 4096    │   │                │
-                     │   │  │ measures per-token latency, publishes p50/p90 │   │                │
-                     │   │  └───────────────────────────────────────────────┘   │                │
-                     │   └──────────────────────────────────────────────────────┘                │
-                     │                                                                          │
-                     │   ┌── critical control task ─────────────────────────────────┐             │
-                     │   │ SCHED_FIFO 63+, pinned to the *other* cores              │             │
-                     │   │ fixed period, hard deadline — the thing that must not  │             │
-                     │   │ be perturbed by the generation                         │             │
-                     │   └────────────────────────────────────────────────────────┘             │
-                     │                                                                          │
-                     │   tracelogger (ring buffer in /dev/shmem)  ──►  trace.kev  ──► traceprinter
-                     │   pidin / slog2info: corroborating state                                    │
-                     └──────────────────────────────────────────────────────────────────────────┘
++----------------------- QNX 8.0 guest (procnto-smp-instr) -----------------------+
+|                                                                                 |
+|   cadence-cli                     cadence-ctrl  (planned)                        |
+|   (any QNX process)               SCHED_FIFO 63+, pinned to ITS cores            |
+|        |                                  |                                     |
+|        | 1. name_open("cadence-llm")      |  fixed period, hard deadline         |
+|        | 2. MsgSend(GENERATE, pid, chid)  |  knows nothing about the LLM         |
+|        v                                  v                                     |
+|   +----------------------------- cadenced -----------------------------+          |
+|   |                                                                     |          |
+|   |  dispatch thread                                                    |          |
+|   |    MsgReceive -> MsgReply(ACCEPTED)        (microseconds)           |          |
+|   |         |                                                           |          |
+|   |         | job queued (mutex + condvar)                              |          |
+|   |         v                                                           |          |
+|   |  inference thread                                                   |          |
+|   |    SCHED_FIFO prio 20        ThreadCtl(_NTO_TCTL_RUNMASK) -> CPU -C |          |
+|   |    llama.cpp + ggml          Bonsai-2B Q2_0, ctx 4096, 4 threads    |          |
+|   |    per token: MsgSend(client_chid, TOKEN) + latency accounting      |          |
+|   |    then:      MsgSend(client_chid, DONE{total_ms, ms_per_token})    |          |
+|   +---------------------------------------------------------------------+          |
+|                                                                                 |
+|   tracelogger (ring buffer in /dev/shmem) --> trace.kev --> traceprinter         |
+|   pidin / slog2info: corroborating state                                         |
++---------------------------------------------------------------------------------+
 ```
 
 The important structural properties:
 
-- **The client never touches the model.** A client sends a request message and
-  receives tokens back over the same channel. The llama.cpp state lives in one
-  place, owned by one process.
-- **The server thread never does the work.** It receives, hands the request to
-  the inference thread, and replies. A slow generation must never make the
-  *service* unresponsive to other clients or to the control task.
+- **The client never touches the model.** It sends a request and receives one
+  message per token. The llama.cpp state lives in one place, owned by one
+  process.
+- **The dispatch thread never does the work.** It receives, queues the job,
+  and replies `ACCEPTED` in microseconds. A multi-second generation must never
+  make the *service* unresponsive to other clients or to the control task.
 - **The inference thread is the only thing that burns CPU**, and it is
-  confined. Its priority is low on purpose: the kernel must be able to preempt
-  it instantly when the control task becomes ready.
+  confined to a core of its choosing by runmask. Its priority is low on
+  purpose: the kernel must be able to preempt it instantly when the control
+  task becomes ready.
+- **The measurement is produced by the service, not guessed by the client.**
+  The `DONE` message carries `total_ms`, `ms_per_token` and `tokens_per_sec`
+  computed server-side.
 - **The control task is a separate process.** It does not know the LLM exists.
   If the LLM misbehaved completely, the control task would still meet its
   deadlines — that is the property being demonstrated, and it is measured, not
@@ -203,7 +200,8 @@ model does not".
 |---|---|---|
 | llama.cpp port builds for `qnx8.0` (x86_64) | ✅ | `qcc -V gcc_ntox86_64` |
 | QNX 8.0 guest boots under QEMU/KVM | ✅ | see [`docs/PITFALLS.md`](docs/PITFALLS.md) for the traps |
-| Native service registers in the pathname space | `TODO(QNX):` | `name_attach()` / `name_open()` round-trip |
+| Native service registers in the pathname space | ✅ `cadenced` publishes `cadence-llm` | `name_attach(NULL, "cadence-llm", 0)`; client resolves with `name_open()` |
+| Client gets a live token stream from the service | `TODO(QNX):` | `cadence-cli -p "…"`, one message per token |
 | Per-token latency on target (p50 / p90 / p99) | `TODO(QNX):` | measured with `clock_gettime_ns()` |
 | Per-token latency **bound** (worst case over N tokens) | `TODO(QNX):` | this is the number that matters |
 | Control-task deadline misses, generation idle vs. generating | `TODO(QNX):` | the isolation proof |
@@ -226,8 +224,15 @@ Short version:
 ```sh
 git clone https://github.com/Tradoooo/cadence.git
 cd cadence
-# host tools (Python 3 standard library only)
-python3 tools/run_bench.py --model Ternary-Bonsai-2-2B-Q2_0.gguf
+
+# 1. build the service and the client for QNX 8.0 (needs the SDP)
+LLAMA_DIR=$HOME/qnx-cadence/llama.cpp ./tools/build-qnx.sh
+
+# 2. build the boot image (procnto + ksh + the binaries + the GGUF)
+MODEL=$HOME/qnx-cadence/Ternary-Bonsai-2-2B-Q2_0.gguf ./tools/mkifs.sh
+
+# 3. boot it (QEMU/KVM, serial log captured)
+./tools/run-qemu.sh
 ```
 
 For the QNX 8.0 guest you need the (free, non-commercial) QNX SDP 8.0; the

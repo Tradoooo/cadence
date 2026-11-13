@@ -98,7 +98,7 @@ non-reasoning checkpoint for the demo.
 
 This is a **model** property, not a QNX one — but it is the kind of thing that
 looks exactly like a broken port in a demo, and it cost us a debugging cycle.
-It is documented in [`PITFALLS.md §11`](PITFALLS.md#11-reasoning-models-drown-the-answer--disable-thinking-for-lfm3--qwen).
+It is documented in [`PITFALLS.md §11`](PITFALLS.md#11-reasoning-models-drown-the-answer-disable-thinking).
 
 ---
 

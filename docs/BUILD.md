@@ -43,14 +43,10 @@ git clone https://github.com/Tradoooo/cadence.git
 cd cadence
 ```
 
-`TODO(QNX):` the canonical host build command once `tools/` is merged
-(expected: a `Makefile` with a `host` target, or `tools/build_host.sh`).
-Until then, the individual pieces are:
+There is no host binary to build: the service is a QNX program. What runs on
+the host is llama.cpp, for the reference measurements:
 
 ```sh
-# the benchmark harness needs no compilation beyond Python itself
-python3 -c "import json,statistics,hashlib; print('stdlib ok')"
-
 # llama.cpp, for the reference measurements
 git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
 cd llama.cpp
@@ -86,11 +82,7 @@ Always pass `-c 4096`.
 
 ## 4. Running the benchmark
 
-```sh
-python3 tools/run_bench.py --model models/bonsai2/Ternary-Bonsai-2-2B-Q2_0.gguf
-```
-
-or directly with `llama-bench`:
+The reference figures come from `llama-bench`:
 
 ```sh
 ./llama.cpp/build/bin/llama-bench \
@@ -107,90 +99,68 @@ The published figures were measured on an **i5-11600K**, llama.cpp
 
 ## 5. QNX 8.0 target
 
-### 5.1 The llama.cpp port
+Three scripts, in this order. All three are on the machine that owns the SDP.
 
-llama.cpp has no upstream QNX support; the port is in `patches/`.
+### 5.1 Build the service and the client
 
 ```sh
-cd cadence
-git apply patches/llama-qnx8.0.patch     # TODO(QNX): exact filename
+LLAMA_DIR=$HOME/qnx-cadence/llama.cpp \
+OUT_DIR=$HOME/qnx-cadence/out \
+./tools/build-qnx.sh
 ```
 
-`TODO(QNX):` the exact patch name, and whether it applies to a given
-llama.cpp commit.
+`LLAMA_DIR` must contain llama.cpp built for QNX (`build-qnx/` with the static
+archives), `OUT_DIR` receives `cadenced` and `cadence-cli`.
 
-### 5.2 Cross-compile
+### 5.2 Build the boot image
 
 ```sh
-cd ../llama.cpp
-cmake -B build-qnx \
-      -DCMAKE_TOOLCHAIN_FILE=$QNX_SDP/cmake/toolchains/qnx.cmake \
-      -DCMAKE_BUILD_TYPE=Release \
-      -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF -DLLAMA_BUILD_TESTS=OFF
-cmake --build build-qnx -j"$(nproc)" --target llama-cli
+MODEL=$HOME/qnx-cadence/Ternary-Bonsai-2-2B-Q2_0.gguf ./tools/mkifs.sh
 ```
 
-`TODO(QNX):` the exact toolchain invocation validated by the port work.
+Produces `$HOME/qnx-cadence/ifs-cadence.bin` — `procnto`, `ksh`, the two
+binaries, the boot script, and the GGUF (hence the 800 MiB image size).
 
-### 5.3 Build the service, the client, the control task
+### 5.3 Boot it
 
 ```sh
-cd ~/cadence-lab/cadence
-qcc -V gcc_ntox86_64 -Wall -Wextra -Werror -o "$WORK/cadence"        src/...
-qcc -V gcc_ntox86_64 -Wall -Wextra -Werror -o "$WORK/cadence-client" src/...
-qcc -V gcc_ntox86_64 -Wall -Wextra -Werror -o "$WORK/cadence-ctrl"   src/...
+./tools/run-qemu.sh 420
 ```
 
-`TODO(QNX):` the exact source lists once `src/` is merged.
+KVM, 4 vCPUs, 6 GiB, serial console captured to
+`$HOME/qnx-cadence/serial-cadence.log`.
 
-### 5.4 Build the guest image
+| Variable | Default | Meaning |
+|---|---|---|
+| `WORK_DIR` | `$HOME/qnx-cadence` | build scratch and image |
+| `IFS_BIN` | `$WORK_DIR/img/ifs-cadence.bin` | image to boot |
+| `SER_LOG` | `$WORK_DIR/serial-cadence.log` | serial transcript |
+| `QEMU` | `$HOME/bin/qemu-system-x86_64` | QEMU binary |
 
-```sh
-cd ~/cadence-lab/cadence
-sh images/build-image.sh ~/cadence-img
-```
+Without KVM, replace `-enable-kvm -cpu host` with `--cpu max` in the script;
+under TCG the CPU model must be `max` or the guest dies early.
 
-The script performs, in order:
+### 5.4 What runs inside the guest
 
-1. `qcc` compilation of the project binaries;
-2. `mkifs` — the IFS (`-o` is the *artefact directory*, the output file is
-   **positional**);
-3. `mkxfs` — the boot partition (optional);
-4. `diskimage` — the bootable disk (optional; the demo boots the IFS directly).
-
-```sh
-sed "s|\$QNX_TARGET|$QNX_TARGET|g" images/buildfile > image.resolved
-mkifs -v -o . image.resolved ifs.bin
-```
-
-### 5.5 Boot the guest
+`tools/run-in-guest.sh`, launched by the startup script through `on … ksh -c`
+(so `$!` and pipes work):
 
 ```sh
-QPREFIX=$HOME/qnx71-vm/qprefix
-"$QPREFIX/usr/bin/qemu-system-x86_64" \
-    --cpu max -smp 4 -m 2048 \
-    -L "$QPREFIX/usr/share/qemu" \
-    -kernel "$HOME/cadence-img/ifs.bin" \
-    -object rng-random,filename=/dev/urandom,id=rng0 \
-    -device virtio-rng-pci,rng=rng0 \
-    -display none -vga std \
-    -chardev socket,id=ser0,path="$DEMO/ser.sock",server=on,wait=off,logfile="$DEMO/serial-kernel.log" \
-    -serial chardev:ser0 \
-    -monitor unix:"$DEMO/mon-kernel.sock",server,nowait &
-```
-
-With KVM, replace `--cpu max` with `-enable-kvm -cpu host` (much faster).
-Under TCG, `--cpu max` is **mandatory** or the guest dies early.
-
-Then, in the guest:
-
-```sh
-cadence --model /proc/boot/model.gguf -c 4096
-cadence-client --name cadence --prompt "Reponds en francais : qu'est-ce qu'un OS temps reel ?"
+/proc/boot/cadenced -m /proc/boot/model.gguf -n cadence-llm -c 4096 -t 4 -P 20 -C 0 &
+/proc/boot/cadence-cli --wait 120 --ping
+/proc/boot/cadence-cli --status
+/proc/boot/cadence-cli -M 64 -p "Quelle est la capitale de la France ? Reponds en francais, en une seule phrase."
+slay cadenced
 ```
 
 The full walkthrough, with expected outputs and checkpoints, is in
-[`CODELAB.md`](CODELAB.md).
+[`CODELAB.md`](CODELAB.md) and [`CODELAB-TARGET.md`](CODELAB-TARGET.md).
+
+### 5.5 The llama.cpp port
+
+llama.cpp has no upstream QNX support. The service links it statically; the
+port work owns the toolchain invocation that produces
+`$LLAMA_DIR/build-qnx/**/lib*.a`. `TODO(QNX):` that exact CMake command.
 
 ---
 

@@ -108,10 +108,10 @@
 <pre class="arch">
    ┌─────────────────────── QNX 8.0 (procnto-smp-instr) ───────────────────────┐
    │                                                                          │
-   │  processus client ── name_open("cadence") ──┐                            │
+   │  processus client ── name_open("cadence-llm") ─┐                            │
    │  (n'importe quel processus QNX)             │                            │
    │                                              ▼                            │
-   │   ┌──────────────── cadence (service natif, name_attach) ──────────────┐  │
+   │   ┌────────── cadenced (service natif, name_attach) ───────────┐  │
    │   │  thread serveur : MsgReceive → dispatch → MsgReply   (soutenu)     │  │
    │   │        │ signal                                                   │  │
    │   │        ▼                                                          │  │
@@ -134,11 +134,11 @@
     <div class="panel">
       <h3>Trois processus, trois r&ocirc;les</h3>
       <ul>
-        <li><b><code>cadence</code></b> &mdash; poss&egrave;de le mod&egrave;le, publie un nom dans l'espace de
-        noms du microkernel, r&eacute;pond aux requ&ecirc;tes, mesure la latence de chaque token.</li>
-        <li><b><code>cadence-client</code></b> &mdash; n'importe quel processus QNX&nbsp;: <code>name_open()</code>
+        <li><b><code>cadenced</code></b> &mdash; poss&egrave;de le mod&egrave;le, publie le nom <code>cadence-llm</code>
+        dans l'espace de noms du microkernel, et pousse un message par token.</li>
+        <li><b><code>cadence-cli</code></b> &mdash; n'importe quel processus QNX&nbsp;: <code>name_open("cadence-llm")</code>
         puis <code>MsgSend()</code>. Il ne touche jamais le mod&egrave;le, ne partage aucun &eacute;tat.</li>
-        <li><b><code>cadence-ctrl</code></b> &mdash; la t&acirc;che de contr&ocirc;le critique&nbsp;: p&eacute;riode
+        <li><b><code>cadence-ctrl</code></b> <span class="tag">en cours</span> &mdash; la t&acirc;che de contr&ocirc;le critique&nbsp;: p&eacute;riode
         fixe, &eacute;ch&eacute;ance dure, <code>SCHED_FIFO</code> 63, c&oelig;urs d&eacute;di&eacute;s. Elle ignore
         l'existence du LLM &mdash; c'est tout l'int&eacute;r&ecirc;t.</li>
       </ul>

@@ -1,9 +1,9 @@
 # Cadence codelab — part 2: the QNX 8.0 guest, the answer, the proof
 
 > **Part 2 of 2.** You have followed [`CODELAB.md`](CODELAB.md) chapters 0–4:
-> llama.cpp builds on the host, the port cross-compiles for QNX 8.0, and the
-> guest image `ifs.bin` exists. This part boots it, asks the model a question
-> in French from another process, and produces the isolation proof.
+> llama.cpp builds on the host, the service cross-compiles for QNX 8.0, and
+> `ifs-cadence.bin` exists. This part boots it, asks the model a question in
+> French from another process, and specifies the isolation proof.
 >
 > Every command below is given with its expected output. Commands that have
 > not been re-run end-to-end yet are marked `TODO(QNX):` — nothing here is
@@ -13,202 +13,201 @@
 
 ## Chapter 5 — Boot the guest
 
-### 5.1 Launch
+### 5.1 One command
+
+`tools/run-qemu.sh` boots the IFS with KVM and captures the serial console to a
+file:
 
 ```sh
-QPREFIX=$HOME/qnx71-vm/qprefix
-DEMO=$HOME/cadence-demo
-mkdir -p "$DEMO"
-
-export LD_LIBRARY_PATH="$QPREFIX/usr/lib/x86_64-linux-gnu:$QPREFIX/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH:-}"
-
-"$QPREFIX/usr/bin/qemu-system-x86_64" \
-    --cpu max -smp 4 -m 2048 \
-    -L "$QPREFIX/usr/share/qemu" \
-    -kernel "$HOME/cadence-img/ifs.bin" \
-    -object rng-random,filename=/dev/urandom,id=rng0 \
-    -device virtio-rng-pci,rng=rng0 \
-    -display none -vga std \
-    -chardev socket,id=ser0,path="$DEMO/ser.sock",server=on,wait=off,logfile="$DEMO/serial-kernel.log" \
-    -serial chardev:ser0 \
-    -monitor unix:"$DEMO/mon-kernel.sock",server,nowait \
-    &
-
-# with KVM, for speed:
-#   -enable-kvm -cpu host    instead of   --cpu max
+cd ~/cadence-lab/cadence
+./tools/run-qemu.sh 420        # 420 s, then QEMU is killed
 ```
 
-> **Pitfall:** under **TCG** (no KVM) you must pass `--cpu max`, otherwise the
-> guest lacks the instructions QNX 8.0 expects and dies early. With KVM,
-> `-enable-kvm -cpu host` is far faster.
-
-### 5.2 Talk to it
-
-The serial console is on a Unix socket, so you can drive it from the host:
+What it runs (`tools/run-qemu.sh`):
 
 ```sh
-$HOME/qnx-emu/ser-console.py --socket "$DEMO/ser.sock" 'pidin'
+qemu-system-x86_64 \
+  -enable-kvm -cpu host -machine pc-i440fx-8.2 -smp 4 -m 6144 \
+  -kernel "$IFS_BIN" \
+  -display none -vga std -no-reboot \
+  -chardev "file,id=ser0,path=$SER_LOG" \
+  -serial chardev:ser0
 ```
 
-or simply:
+Three points that matter:
+
+- **`-m 6144` (6 GiB).** The IFS is 800 MiB and the KV cache for 4096 tokens on
+  a 2 B model is not small. 2 GiB — the value most QNX demos use — is not
+  enough here.
+- **`-enable-kvm -cpu host`** on a machine that has KVM. Without KVM, replace
+  with **`--cpu max`**: TCG's default CPU model lacks the instructions the
+  guest expects and it dies early.
+- **`-serial chardev:file`** rather than a console you watch: the whole demo is
+  scripted, so the serial log *is* the transcript.
+
+The script uses `$HOME/bin/qemu-system-x86_64`; set `QEMU=` to point elsewhere.
+
+### 5.2 Read the transcript
 
 ```sh
-socat - UNIX-CONNECT:$DEMO/ser.sock
+tail -f ~/qnx-cadence/serial-cadence.log
 ```
 
-### 5.3 The model on the guest
+Expected shape:
 
-The 546 MiB GGUF has to reach the guest. Either put it in the IFS
-(`llama-cli = /proc/boot/llama-cli` + `model.gguf = ./model.gguf`) or copy it
-over the serial console / a shared disk.
-
-```sh
-# in the guest
-ls -l /proc/boot/model.gguf
+```
+# Cadence : service LLM natif QNX 8.0 (resource manager)
+--- version de l invite ---
+QNX ...
+--- demarrage de cadenced (modele: /proc/boot/model.gguf) ---
+cadenced: INFO  loading model '/proc/boot/model.gguf' (ctx=4096, threads=4)
+cadenced: INFO  inference thread: SCHED_FIFO prio 20, pinned on CPU 0
+cadenced: INFO  service 'cadence-llm' published
 ```
 
-**Checkpoint:** the guest lists the model and its size.
+`TODO(QNX):` paste the exact serial transcript once the guest run is green.
+
+> **If the boot hangs right after the banner**, the loadable modules
+> (`io-blk.so`, `fs-qnx6.so`) or a library from the wrong tree branch are
+> missing — see [`BUILD.md §5.4`](BUILD.md) and
+> [`PITFALLS.md §5`](PITFALLS.md#5-io-blkso--fs-qnx6so-must-come-from-libdll-and-their-base-libz-from-usrlib).
 
 ---
 
-## Chapter 6 — The service, natively, and the French answer
+## Chapter 6 — The French answer
 
-### 6.1 Start the service inside the guest
+### 6.1 Ask, from inside the guest
 
-```sh
-# in the guest (serial console)
-cadence --model /proc/boot/model.gguf -c 4096
-```
-
-Expected log (names and wording `TODO(QNX):` until the daemon lands):
-
-```
-cadence: modele chargé (qwen35 2B Q2_0), contexte 4096
-cadence: thread d'inférence SCHED_FIFO prio 10, runmask {2,3}
-cadence: service publié sous /dev/name/local/cadence
-```
-
-### 6.2 Ask it, from another process
+`run-in-guest.sh` does this automatically at boot. To do it by hand on the
+serial console:
 
 ```sh
-# in the guest, a *different* process
-cadence-client --name cadence \
-    --prompt "Explique en deux phrases ce qu'est un OS temps reel. Reponds en francais."
+# the service is already running from the boot script; check it
+cadence-cli --ping
+cadence-cli --status
+```
+
+`--status` prints the real-time configuration **as reported by the service**
+(`CADENCE_RSP_STATUS`):
+
+```
+policy   : SCHED_FIFO
+priority : 20
+runmask  : 0x1
+threads  : 4
+ctx      : 4096
+max_tok  : 128
+model    : /proc/boot/model.gguf
+```
+
+Then the question:
+
+```sh
+cadence-cli -M 64 -p "Quelle est la capitale de la France ? Reponds en francais, en une seule phrase."
 ```
 
 Expected:
 
 ```
-cadence-client: reponse (12 jetons, 40 ms/jeton max) :
-Un OS temps réel est un système d'exploitation capable de fonctionner avec une
-synchronisation précise des tâches.
+cadence-cli: reponse (12 jetons, 40 ms/jeton)
+La capitale de la France est Paris.
+cadence-cli: --- measurements ---
+...
 ```
 
-### 6.3 Prove the client used the microkernel, not a socket
+### 6.2 Prove the client used the microkernel
 
 ```sh
-# in the guest
-pidin -f a     # the service is a process, with a channel
-pidin arg     # and its arguments
+cadence-cli --threads      # the "pidin threads" table of the system
+pidin info                 # guest version
 ```
 
-And from the host, prove no socket is involved:
+The service appears as a process with a thread at `SCHED_FIFO` priority 20.
+No TCP port is involved anywhere: the client resolved `cadence-llm` through the
+QNX name service and spoke to the daemon over a channel.
 
-```sh
-grep -c 'name_attach\|/dev/name/local' "$HOME/cadence-demo/serial-kernel.log"
-```
-
-**Checkpoint:** you can show that the client reached the service through
-`/dev/name/local/cadence` and that no TCP port was opened.
+**Checkpoint:** you can show `/dev/name/local/cadence-llm` as the only address
+the client ever used.
 
 ---
 
 ## Chapter 7 — The isolation proof
 
-### 7.1 Start the control task
+> **Status.** The control task (`cadence-ctrl`) is the measurement instrument
+> still being written. This chapter is its specification: the commands below
+> are the intended interface and the numbers they must produce are
+> `TODO(QNX):` until the instrument exists. Do not quote this chapter's output
+> as a result.
+
+### 7.1 The experiment
+
+1. Run the control task **alone**. Record the lateness of every period. → *baseline*.
+2. Run it again **while the model generates**. Record. → *under load*.
+3. Compare the two distributions. The claim is that they are indistinguishable
+   within the measurement's resolution.
+4. Capture the same window with `tracelogger` and read it with `traceprinter`:
+   the kernel's own record of who ran where, at which priority.
+
+### 7.2 Sketch of the commands
 
 ```sh
-# in the guest
+# in the guest — baseline
 cadence-ctrl --period-ms 10 --deadline-ms 2 --out /dev/shmem/ctrl-baseline.jsonl &
-CTRLPID=$!
-sleep 30
-kill -TERM $CTRLPID
-```
 
-This records the lateness of every 10 ms period, with a 2 ms deadline, while
-**nothing else is running**. That is the baseline.
-
-### 7.2 Now generate, and record again
-
-```sh
-# in the guest
-cadence-ctrl --period-ms 10 --deadline-ms 2 --out /dev/shmem/ctrl-load.jsonl &
-CTRLPID=$!
-
+# in the guest — under load, with the trace
 tracelogger -c -f /dev/shmem/trace.kev -A scenario=generate-under-load &
-TRACEPID=$!
+cadence-ctrl --period-ms 10 --deadline-ms 2 --out /dev/shmem/ctrl-load.jsonl &
+cadence-cli -M 128 -p "Explique en deux phrases ce qu'est un OS temps reel."
 
-cadence-client --name cadence \
-    --prompt "Explique en deux phrases ce qu'est un OS temps reel. Reponds en francais."
-
-kill -TERM $TRACEPID
-kill -TERM $CTRLPID
+# freeze the trace, stop the control task
+slay tracelogger
+slay cadence-ctrl
 ```
 
 > **Pitfall:** `tracelogger` defaults to *iterations* mode (32 buffers) and
-> stops. Use `-c` for continuous capture. It must run as **root**, and only
-> one instance at a time.
+> stops on its own. Use `-c` for continuous capture. It must run as **root**,
+> and only one instance at a time.
 
-### 7.3 Compare
+### 7.3 What the numbers must show
 
-```sh
-# on the host, after pulling the two JSONL files back
-python3 tools/compare_jitter.py \
-    --idle /dev/shmem/ctrl-baseline.jsonl \
-    --load /dev/shmem/ctrl-load.jsonl
-```
+| Quantity | Baseline | Under load | Claim |
+|---|---|---|---|
+| deadline misses | `TODO(QNX):` | `TODO(QNX):` | equal |
+| p50 lateness | `TODO(QNX):` | `TODO(QNX):` | equal within resolution |
+| p99 lateness | `TODO(QNX):` | `TODO(QNX):` | equal within resolution |
+| max lateness | `TODO(QNX):` | `TODO(QNX):` | equal within resolution |
 
-Expected output (shape; **numbers `TODO(QNX)`**):
-
-```
-idle : n=3000  p50=0.00 ms  p99=0.31 ms  max=0.74 ms  misses=0
-load : n=3000  p50=0.00 ms  p99=0.31 ms  max=0.76 ms  misses=0
-VERDICT: la génération ne perturbe pas la tâche de contrôle
-```
-
-### 7.4 Read the trace
+### 7.4 Reading the trace
 
 ```sh
 traceprinter -h /dev/shmem/trace.kev > trace.txt
 ```
 
-What you should be able to show in the trace:
+What the trace must show:
 
 - the control thread running at its priority, on its cores;
-- the inference thread confined to the LLM cores;
-- **no priority inversion** — the control thread is never scheduled behind a
-  higher-priority thread that is not supposed to be there;
-- the kernel's own record of the scheduling decisions.
+- the inference thread confined to its own core (`-C`);
+- **no priority inversion** — the control thread never scheduled behind a
+  thread that is not supposed to be there.
 
-> **Caveat, stated honestly:** under an emulator, the trace's timestamps are
-> only as good as the emulator's `ClockCycles()` synchronisation across CPUs
-> (the SDP documentation says so explicitly). The *ordering* of events is
-> solid; the *absolute* durations are emulator-inflated. On real hardware
-> they are exact. We say this rather than quoting emulator timings as if
-> they were silicon.
+> **Caveat, stated honestly.** Under an emulator, the trace's timestamps are
+> only as good as `ClockCycles()` synchronisation across CPUs, which the SDP
+> documentation requires and an emulator does not guarantee. The **ordering**
+> of events is solid; the **absolute durations** are emulator-inflated. On real
+> hardware they are exact. We say this rather than quoting emulator timings as
+> if they were silicon.
 
-**Checkpoint:** you can state, with the artefact in front of you, the claim
-that the trace supports — and the one it does not.
+**Checkpoint:** you can state, with the artefact in front of you, what the trace
+supports — and what it does not.
 
 ---
 
 ## Chapter 8 — Read the published numbers
 
 The results, with their conditions, are in
-[`../README.md`](../README.md#results) and
-[`RESULTS.md](RESULTS.md). The site
-(<https://tradoooo.github.io/cadence/>) shows them too, with the live-guest
-panel and the latency report.
+[`../README.md`](../README.md#results), [`RESULTS.md`](RESULTS.md), and on the
+site (<https://tradoooo.github.io/cadence/>), which also carries the latency
+report under `site/report/`.
 
 ---
 
@@ -216,24 +215,21 @@ panel and the latency report.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `std::random_device` throws at model load | no `/dev/urandom` | start `slogger2` then `random` in the boot script ([§4.2](CODELAB.md#42-the-boot-script--and-its-limits)) |
-| `ThreadCtl(_NTO_TCTL_RUNMASK)` returns −1 / `EINVAL` | the runmask matches no boot-time cluster | define the clusters with `startup-x86 -c` ([§4.1](CODELAB.md#41-the-buildfile)) |
-| the guest hangs right after the banner | `io-blk.so` / `fs-qnx6.so` missing from `lib/dll` | add them ([§4.3](CODELAB.md#43-the-libraries)) |
-| `command not found: cat` | toybox applet not linked | add the `[type=link]` line ([§4.3](CODELAB.md#43-the-libraries)) |
-| the model loads then dies of OOM | default context (262144) | pass `-c 4096` ([§1.3](CODELAB.md#13-ask-it-something-in-french)) |
-| no answer, only a thinking trace | reasoning enabled | disable reasoning ([§1.3](CODELAB.md#13-ask-it-something-in-french)) |
-| `$!` is the wrong pid in the boot script | the `[+script]` block is not a full shell | move the logic to a `.sh` and launch it with `on` ([§4.2](CODELAB.md#42-the-boot-script--and-its-limits)) |
-| `mkifs` produced nothing usable | output given with `-o` | use the positional form ([§4.4](CODELAB.md#44-build-it)) |
-| the guest is unusably slow | TCG without `--cpu max` | `--cpu max`, or `-enable-kvm -cpu host` ([§5.1](#51-launch)) |
+| `std::random_device` throws at model load | no `/dev/urandom` | start `slogger2` then `random` in the boot script ([PITFALLS §1](PITFALLS.md#1-devurandom-does-not-exist-unless-you-start-it)) |
+| `ThreadCtl(_NTO_TCTL_RUNMASK)` warns / `EINVAL` | the mask matches no boot-time cluster | single-CPU masks always work; multi-core masks need `startup-x86 -c` ([PITFALLS §3](CODELAB.md)) |
+| the guest hangs right after the banner | `io-blk.so` / `fs-qnx6.so` missing from `lib/dll` | add them ([CODELAB §4.4](CODELAB.md)) |
+| `command not found: cat` | toybox applet not linked | use `cadence-cli --cat`, or add the link ([CODELAB §4.4](CODELAB.md)) |
+| the model loads then dies of OOM | default context (262144) | `-c 4096`, and give QEMU `-m 6144` |
+| no answer, only a thinking trace | reasoning enabled | disable reasoning ([PITFALLS §11](PITFALLS.md#11-reasoning-models-drown-the-answer-disable-thinking)) |
+| `$!` is the wrong pid in the boot script | the `[+script]` block is not a full shell | move the logic to a `.sh` and launch it with `on` ([CODELAB §4.3](CODELAB.md)) |
+| `mkifs` produced nothing usable | output given with `-o` | use the positional form ([CODELAB §4.5](CODELAB.md)) |
+| the guest is unusably slow | TCG without `--cpu max` | `--cpu max`, or `-enable-kvm -cpu host` ([§5.1](#51-one-command)) |
 
 ---
 
 ## Where to go next
 
-- [`QNX-SPECIFICS.md](QNX-SPECIFICS.md) — why each QNX
-  mechanism, in detail.
-- [`PITFALLS.md](PITFALLS.md) — the full trap list.
-- [`ARCHITECTURE.md](ARCHITECTURE.md) — the components and
-  the scheduling model.
-- [`SUBMISSION.md](SUBMISSION.md) — the Devpost text and the
-  3-minute video script.
+- [`QNX-SPECIFICS.md`](QNX-SPECIFICS.md) — why each QNX mechanism, in detail.
+- [`PITFALLS.md`](PITFALLS.md) — the full trap list.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — the components and the scheduling model.
+- [`SUBMISSION.md`](SUBMISSION.md) — the Devpost text and the 3-minute video script.

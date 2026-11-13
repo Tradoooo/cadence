@@ -15,13 +15,13 @@ The service publishes itself in the microkernel's pathname space:
 ```c
 #include <sys/dispatch.h>     /* name_attach, name_open, name_detach */
 
-/* server side */
-name_attach_t *na = name_attach(NULL, "/dev/name/local/cadence", 0);
+/* server side (src/daemon/cadenced.c) */
+name_attach_t *na = name_attach(NULL, "cadence-llm", 0);
 /* na->chid  → the channel to MsgReceive() on
    na->mntid → the mount id of the name  */
 
-/* client side */
-int coid = name_open("/dev/name/local/cadence", 0);
+/* client side (src/client/cadence-cli.c) */
+int coid = name_open("cadence-llm", 0);
 /* coid is a connection id: MsgSend(coid, …) / MsgReply() */
 ```
 

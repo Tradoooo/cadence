@@ -261,7 +261,7 @@
 
 ---
 
-## 11. Reasoning models drown the answer — disable thinking for `LFM3` / `Qwen`
+## 11. Reasoning models drown the answer: disable thinking
 
 - **Symptom:** the model "answers" but the output is a 64-token thinking trace
   and **no final answer** — the real reply never appears within the budget.
