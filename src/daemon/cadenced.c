@@ -459,6 +459,7 @@ int main(int argc, char ** argv)
     cadence_daemon_t d;
     int rc;
 
+    memset(&d, 0, sizeof(d));
     rc = cadence_parse_args(argc, argv, &d.opt);
     if (rc == 2) {
         cadence_usage(argv[0]);
@@ -473,7 +474,6 @@ int main(int argc, char ** argv)
         return 1;
     }
 
-    memset(&d, 0, sizeof(d));
     pthread_mutex_init(&d.lock, NULL);
     pthread_cond_init(&d.cond, NULL);
 
