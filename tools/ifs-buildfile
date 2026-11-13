@@ -1,0 +1,92 @@
+# ifs-buildfile -- IFS QNX 8.0 x86_64 pour la preuve temps reel Cadence.
+#
+# Construction (sur la machine qui porte le SDP 8.0) :
+#   . ~/qnx800/qnxsdp-env.sh
+#   mkifs -v -o ifs-cadence-rt.bin buildfile
+#
+# Contenu :
+#   - le noyau QNX 8.0 (procnto-smp-instr, instrumenté pour tracelogger),
+#   - le pilote de disque IDE (devb-eide) pour extraire la trace,
+#   - tracelogger + libtracelog (analyse de trace),
+#   - les outils de la preuve RT : ctrl_task, latency_probe, trace_dump,
+#   - le modèle GGUF local (ternaire, 2,2 B) embarqué dans l'IFS,
+#   - les scripts de campagne (campaign.sh, tracelogger-run.sh).
+#
+# Note : la section [+script] ne gère ni pipes ni redirections -> tous les
+# scripts sont donc lancés via `on -d -t /dev/ser1 ksh -c <fichier>`.
+
+[search=.:$QNX_TARGET/x86_64:$QNX_TARGET/x86_64/boot/sys:]
+
+[+dupignore]
+[+optional]
+
+[uid=0 gid=0 dperms=0555 perms=0555]
+
+[image=700m]
+[virtual=x86_64,multiboot ] boot = {
+    startup-x86 -D8250..115200 -zz -f 0,0,1000M
+    PATH=/proc/boot:/system/bin
+    LD_LIBRARY_PATH=/proc/boot:/system/lib:/system/lib/dll
+    [+keeplinked uid=0 gid=0 perms=0700 ] CONFIG_PATH=/proc/boot:/system/etc procnto-smp-instr -mr -d 022 -u 066 -F 2000
+}
+
+[+script] startup-script = {
+    procmgr_symlink /proc/boot/ksh /bin/sh
+    procmgr_symlink /proc/boot/ksh /bin/ksh
+    procmgr_symlink /proc/boot/ldqnx-64.so.2 /usr/lib/ldqnx-64.so.2
+    procmgr_symlink /proc/boot/pidin /bin/pidin
+    procmgr_symlink /proc/boot/mount /bin/mount
+    procmgr_symlink /proc/boot/umount /bin/umount
+    procmgr_symlink /proc/boot/slay /bin/slay
+    procmgr_symlink /proc/boot/kill /bin/kill
+    PATH=/proc/boot:/system/bin
+    LD_LIBRARY_PATH=/proc/boot:/system/lib:/system/lib/dll
+    HOME=/proc/boot
+    TERM=qansi
+    devc-con
+    devc-ser8250 -e
+    waitfor /dev/ser1
+    devb-eide cam user=20:20 blk cache=64M,auto=partition,vnode=2000,ncache=2000,commit=low
+    waitfor /dev/hd0
+    on -d -t /dev/ser1 -e HOME=/proc/boot ksh -c /proc/boot/campaign.sh
+}
+
+multiboot.boot = boot/sys/multiboot.boot
+procnto-smp-instr = boot/sys/procnto-smp-instr
+startup-x86 = boot/sys/startup-x86
+
+devc-con = sbin/devc-con
+devc-ser8250 = sbin/devc-ser8250
+devb-eide = sbin/devb-eide
+io-blk.so = lib/dll/io-blk.so
+fs-qnx6.so = lib/dll/fs-qnx6.so
+
+on = bin/on
+ksh = bin/ksh
+mount = bin/mount
+umount = bin/umount
+pidin = bin/pidin
+slay = bin/slay
+kill = bin/kill
+
+ldqnx-64.so.2 = usr/lib/ldqnx-64.so.2
+libc.so.6 = lib/libc.so.6
+libsecpol.so.1 = lib/libsecpol.so.1
+libslog2.so.1 = lib/libslog2.so.1
+libcam.so.2 = lib/libcam.so.2
+libm.so.3 = lib/libm.so.3
+libgcc_s.so.1 = lib/libgcc_s.so.1
+libsocket.so.4 = lib/libsocket.so.4
+libc++.so.2 = usr/lib/libc++.so.2
+
+tracelogger = usr/sbin/tracelogger
+libtracelog.so.1 = lib/libtracelog.so.1
+
+ctrl_task = ./ctrl_task
+latency_probe = ./latency_probe
+trace_dump = ./trace_dump
+rt_sleep = ./rt_sleep
+campaign.sh = ./campaign.sh
+tracelogger-run.sh = ./tracelogger-run.sh
+
+model.gguf = /home/baptiste/qnx-llama/Ternary-Bonsai-2-2B-Q2_0.gguf
