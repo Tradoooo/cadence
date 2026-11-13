@@ -180,6 +180,25 @@ static void on_signal(int sig)
     g_stop = 1; /* the dispatch loop leaves on EINTR */
 }
 
+/*
+ * Put the calling thread in SCHED_FIFO.
+ *
+ * It is called on the main thread before the llama.cpp context is built:
+ * the llama.cpp worker threads are created at that moment and they inherit
+ * the scheduling of their creator. They must not stay SCHED_OTHER, the
+ * SCHED_FIFO inference thread would starve them and the generation would
+ * stall (priority inversion).
+ */
+static void set_fifo(int prio)
+{
+    struct sched_param sp;
+
+    sp.sched_priority = prio;
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) != 0) {
+        log_msg("WARN", "cannot set SCHED_FIFO prio %d on the main thread", prio);
+    }
+}
+
 static int install_handlers(void)
 {
     struct sigaction sa;
@@ -315,8 +334,9 @@ static void * worker_main(void * arg)
     cadence_daemon_t * d = (cadence_daemon_t *) arg;
     uint64_t mask = (uint64_t) 1 << d->opt.cpu;
 
-    /* ThreadCtl applies to the calling thread: pin ourselves. */
-    if (ThreadCtl(_NTO_TCTL_RUNMASK, &mask) == -1) {
+    /* ThreadCtl applies to the calling thread: pin ourselves.
+     * The runmask is passed by value, disguised as a pointer. */
+    if (ThreadCtl(_NTO_TCTL_RUNMASK, (void *) (uintptr_t) mask) == -1) {
         log_msg("WARN", "cannot pin the inference thread on CPU %d: %s",
                 d->opt.cpu, strerror(errno));
     } else {
@@ -532,6 +552,8 @@ int main(int argc, char ** argv)
     d.opt = opt;
     pthread_mutex_init(&d.lock, NULL);
     pthread_cond_init(&d.cond, NULL);
+
+    set_fifo(opt.prio);
 
     log_msg("INFO", "loading model '%s' (ctx=%d, threads=%d)", opt.model, opt.n_ctx, opt.n_threads);
     d.llm = cadence_llm_load(opt.model, opt.n_ctx, opt.n_threads, err, sizeof(err));
