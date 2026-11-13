@@ -1,5 +1,5 @@
 /*
- * cadenced — Cadence QNX native LLM service (microkernel resource manager).
+ * cadenced.c — Cadence QNX native LLM service (microkernel resource manager).
  *
  * The daemon owns the GGUF model and serves it to any QNX process through
  * the native message passing of the microkernel: the name service
@@ -15,10 +15,8 @@
 #define _QNX_SOURCE 1
 
 #include <errno.h>
-#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
-#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,32 +29,18 @@
 #include <unistd.h>
 
 #include "cadence_llm.h"
+#include "cadence_log.h"
 #include "cadence_msg.h"
+#include "cadence_opts.h"
+#include "cadence_reply.h"
 
-#define CADENCE_DEFAULT_NAME    "cadence-llm"
-#define CADENCE_DEFAULT_MODEL   "/proc/boot/model.gguf"
-#define CADENCE_DEFAULT_CTX     4096
-#define CADENCE_DEFAULT_THREADS 4
-#define CADENCE_DEFAULT_PRIO    20
-#define CADENCE_DEFAULT_MAXTOK  128
-#define CADENCE_PROMPT_BUF      8192
+#define CADENCE_PROMPT_BUF 8192
 
 /* Set by the signal handler, checked by the dispatch loop. */
 static volatile sig_atomic_t g_stop = 0;
 
 /* Set by a CADENCE_REQ_CANCEL request, checked by the token callback. */
 static volatile int g_cancel = 0;
-
-typedef struct {
-    char     model[512];
-    char     name[64];
-    int      n_ctx;
-    int      n_threads;
-    int      prio;
-    int      cpu;
-    int      max_tokens;
-    uint32_t seed;
-} cadence_opts_t;
 
 typedef struct {
     int            client_pid;
@@ -81,108 +65,27 @@ typedef struct {
     cadence_req_generate job;
 } cadence_daemon_t;
 
-static void log_msg(const char * level, const char * fmt, ...)
-{
-    struct timespec ts;
-    va_list ap;
-
-    clock_gettime(CLOCK_REALTIME, &ts);
-    fprintf(stderr, "[%lld.%03ld] cadenced: %-5s ",
-            (long long) ts.tv_sec, ts.tv_nsec / 1000000, level);
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
-    fputc('\n', stderr);
-    fflush(stderr);
-}
-
-static double now_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1000.0 + (double) ts.tv_nsec / 1000000.0;
-}
-
-static void usage(const char * prog)
-{
-    printf("Usage: %s [options]\n"
-           "  -m, --model PATH     GGUF model to serve (default %s)\n"
-           "  -n, --name NAME      QNX name service entry (default %s)\n"
-           "  -c, --ctx N          context size in tokens (default %d)\n"
-           "  -t, --threads N      llama.cpp worker threads (default %d)\n"
-           "  -P, --prio N         SCHED_FIFO priority of the inference thread (default %d)\n"
-           "  -C, --cpu N          CPU the inference thread is pinned to (default 0)\n"
-           "  -M, --max-tokens N   default maximum number of tokens (default %d)\n"
-           "  -s, --seed N         sampling seed (0 = random)\n"
-           "  -h, --help           this help\n",
-           prog, CADENCE_DEFAULT_MODEL, CADENCE_DEFAULT_NAME, CADENCE_DEFAULT_CTX,
-           CADENCE_DEFAULT_THREADS, CADENCE_DEFAULT_PRIO, CADENCE_DEFAULT_MAXTOK);
-}
-
-/* Parse the command line: 0 on success, 1 on error, 2 when --help was asked. */
-static int parse_args(int argc, char ** argv, cadence_opts_t * opt)
-{
-    int i;
-
-    memset(opt, 0, sizeof(*opt));
-    snprintf(opt->model, sizeof(opt->model), "%s", CADENCE_DEFAULT_MODEL);
-    snprintf(opt->name, sizeof(opt->name), "%s", CADENCE_DEFAULT_NAME);
-    opt->n_ctx      = CADENCE_DEFAULT_CTX;
-    opt->n_threads  = CADENCE_DEFAULT_THREADS;
-    opt->prio       = CADENCE_DEFAULT_PRIO;
-    opt->cpu        = 0;
-    opt->max_tokens = CADENCE_DEFAULT_MAXTOK;
-
-    for (i = 1; i < argc; i++) {
-        const char * a = argv[i];
-        const char * v = (i + 1 < argc) ? argv[i + 1] : NULL;
-
-        if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
-            return 2;
-        }
-        if (!v) {
-            fprintf(stderr, "cadenced: missing value for option '%s'\n", a);
-            return 1;
-        }
-        if (!strcmp(a, "-m") || !strcmp(a, "--model")) {
-            snprintf(opt->model, sizeof(opt->model), "%s", v);
-        } else if (!strcmp(a, "-n") || !strcmp(a, "--name")) {
-            snprintf(opt->name, sizeof(opt->name), "%s", v);
-        } else if (!strcmp(a, "-c") || !strcmp(a, "--ctx")) {
-            opt->n_ctx = atoi(v);
-        } else if (!strcmp(a, "-t") || !strcmp(a, "--threads")) {
-            opt->n_threads = atoi(v);
-        } else if (!strcmp(a, "-P") || !strcmp(a, "--prio")) {
-            opt->prio = atoi(v);
-        } else if (!strcmp(a, "-C") || !strcmp(a, "--cpu")) {
-            opt->cpu = atoi(v);
-        } else if (!strcmp(a, "-M") || !strcmp(a, "--max-tokens")) {
-            opt->max_tokens = atoi(v);
-        } else if (!strcmp(a, "-s") || !strcmp(a, "--seed")) {
-            opt->seed = (uint32_t) strtoul(v, NULL, 0);
-        } else {
-            fprintf(stderr, "cadenced: unknown option '%s'\n", a);
-            return 1;
-        }
-        i++;
-    }
-    if (opt->n_ctx <= 0 || opt->n_threads <= 0 || opt->max_tokens <= 0) {
-        fprintf(stderr, "cadenced: invalid numeric option\n");
-        return 1;
-    }
-    return 0;
-}
-
 static void on_signal(int sig)
 {
     (void) sig;
     g_stop = 1; /* the dispatch loop leaves on EINTR */
 }
 
+/* Report a fatal fault instead of dying silently. */
+static void on_fault(int sig)
+{
+    char buf[64];
+    int n;
+
+    n = snprintf(buf, sizeof(buf), "cadenced: FATAL fault, signal %d\n", sig);
+    (void) write(STDERR_FILENO, buf, n);
+    _exit(3);
+}
+
 static int install_handlers(void)
 {
     struct sigaction sa;
+    struct sigaction fa;
 
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_signal;
@@ -195,6 +98,17 @@ static int install_handlers(void)
     if (sigaction(SIGINT, &sa, NULL) == -1) {
         return -1;
     }
+
+    memset(&fa, 0, sizeof(fa));
+    fa.sa_handler = on_fault;
+    sigemptyset(&fa.sa_mask);
+    fa.sa_flags = SA_RESETHAND;
+    sigaction(SIGSEGV, &fa, NULL);
+    sigaction(SIGBUS, &fa, NULL);
+    sigaction(SIGILL, &fa, NULL);
+    sigaction(SIGFPE, &fa, NULL);
+    sigaction(SIGABRT, &fa, NULL);
+
     signal(SIGPIPE, SIG_IGN);
     return 0;
 }
@@ -207,7 +121,10 @@ static int push_to_client(cadence_job_t * job, const void * msg, size_t len)
     if (job->coid < 0) {
         return -1;
     }
-    /* MsgSendnc: the inference thread must never wait for a slow client. */
+    /*
+     * MsgSendnc: the inference thread never waits for the reply of a
+     * token, the client answers with MsgReply on its own channel.
+     */
     rc = MsgSendnc(job->coid, msg, len, NULL, 0);
     if (rc == -1) {
         job->client_gone = 1;
@@ -239,6 +156,46 @@ static int on_token(void * user_data, const char * text, int token_id,
     return (job->cancel || g_cancel) ? 1 : 0;
 }
 
+/* Send an error message to the client and close the connection. */
+static void push_error(cadence_job_t * job, int code, const char * message)
+{
+    cadence_rsp_error rsp;
+
+    memset(&rsp, 0, sizeof(rsp));
+    rsp.hdr.magic   = CADENCE_MAGIC;
+    rsp.hdr.version = CADENCE_PROTO_VERSION;
+    rsp.hdr.type    = CADENCE_RSP_ERROR;
+    rsp.code        = code;
+    snprintf(rsp.message, sizeof(rsp.message), "%s", message);
+    push_to_client(job, &rsp, sizeof(rsp));
+}
+
+/* Fill the final message of a generation (throughput). */
+static void fill_done(cadence_rsp_done * done, const cadence_job_t * job,
+                      int n_tokens, int max_tokens, double total_ms)
+{
+    memset(done, 0, sizeof(*done));
+    done->hdr.magic   = CADENCE_MAGIC;
+    done->hdr.version = CADENCE_PROTO_VERSION;
+    done->hdr.type    = CADENCE_RSP_DONE;
+    done->seq         = job->seq;
+    done->n_tokens    = (n_tokens > 0) ? (uint32_t) n_tokens : 0;
+    done->total_ms    = total_ms;
+    if (done->n_tokens > 0) {
+        done->ms_per_token   = total_ms / (double) done->n_tokens;
+        done->tokens_per_sec = (total_ms > 0.0) ? (done->n_tokens * 1000.0 / total_ms) : 0.0;
+    }
+    if (job->cancel || g_cancel) {
+        done->finish = CADENCE_FINISH_CANCELLED;
+    } else if (n_tokens < 0) {
+        done->finish = CADENCE_FINISH_ERROR;
+    } else if (n_tokens >= max_tokens) {
+        done->finish = CADENCE_FINISH_LENGTH;
+    } else {
+        done->finish = CADENCE_FINISH_EOS;
+    }
+}
+
 /* Run one generation and stream the tokens to the client. */
 static void run_generation(cadence_daemon_t * d, const cadence_req_generate * req)
 {
@@ -258,28 +215,21 @@ static void run_generation(cadence_daemon_t * d, const cadence_req_generate * re
     g_cancel        = 0;
 
     if (job.client_pid <= 0 || job.client_chid <= 0) {
-        log_msg("WARN", "generate request without client channel, ignored");
+        cadence_log("WARN", "generate request without client channel, ignored");
         return;
     }
     job.coid = ConnectAttach(0, (pid_t) job.client_pid, job.client_chid, 0, 0);
     if (job.coid == -1) {
-        log_msg("WARN", "ConnectAttach to client %d chid %d failed: %s",
-                job.client_pid, job.client_chid, strerror(errno));
+        cadence_log("WARN", "ConnectAttach to client %d chid %d failed: %s",
+                    job.client_pid, job.client_chid, strerror(errno));
         return;
     }
 
     max_tokens = req->max_tokens > 0 ? req->max_tokens : d->opt.max_tokens;
-    t0 = now_ms();
+    t0 = cadence_now_ms();
 
     if (cadence_llm_build_prompt(d->llm, req->prompt, prompt, sizeof(prompt), err, sizeof(err)) != 0) {
-        cadence_rsp_error rsp;
-        memset(&rsp, 0, sizeof(rsp));
-        rsp.hdr.magic   = CADENCE_MAGIC;
-        rsp.hdr.version = CADENCE_PROTO_VERSION;
-        rsp.hdr.type    = CADENCE_RSP_ERROR;
-        rsp.code        = EINVAL;
-        snprintf(rsp.message, sizeof(rsp.message), "%s", err);
-        push_to_client(&job, &rsp, sizeof(rsp));
+        push_error(&job, EINVAL, err);
         ConnectDetach(job.coid);
         return;
     }
@@ -288,26 +238,12 @@ static void run_generation(cadence_daemon_t * d, const cadence_req_generate * re
                                      req->seed ? req->seed : d->opt.seed,
                                      on_token, &job);
 
-    memset(&done, 0, sizeof(done));
-    done.hdr.magic   = CADENCE_MAGIC;
-    done.hdr.version = CADENCE_PROTO_VERSION;
-    done.hdr.type    = CADENCE_RSP_DONE;
-    done.seq         = job.seq;
-    done.n_tokens    = (n_tokens > 0) ? (uint32_t) n_tokens : 0;
-    done.total_ms    = now_ms() - t0;
-    done.finish      = job.cancel ? CADENCE_FINISH_CANCELLED
-                     : (n_tokens < 0) ? CADENCE_FINISH_ERROR
-                     : (n_tokens >= max_tokens) ? CADENCE_FINISH_LENGTH
-                     : CADENCE_FINISH_EOS;
-    if (done.n_tokens > 0) {
-        done.ms_per_token   = done.total_ms / (double) done.n_tokens;
-        done.tokens_per_sec = (done.total_ms > 0.0) ? (done.n_tokens * 1000.0 / done.total_ms) : 0.0;
-    }
+    fill_done(&done, &job, n_tokens, max_tokens, cadence_now_ms() - t0);
     push_to_client(&job, &done, sizeof(done));
     ConnectDetach(job.coid);
 
-    log_msg("INFO", "generation done: %u tokens in %.0f ms (%.2f tok/s)",
-            done.n_tokens, done.total_ms, done.tokens_per_sec);
+    cadence_log("INFO", "generation done: %u tokens in %.0f ms (%.2f tok/s)",
+                done.n_tokens, done.total_ms, done.tokens_per_sec);
 }
 
 /* Inference thread: one job at a time, tokens are pushed to the client. */
@@ -319,12 +255,12 @@ static void * worker_main(void * arg)
     /* ThreadCtl applies to the calling thread: pin ourselves.
      * The runmask is passed by value, disguised as a pointer. */
     if (ThreadCtl(_NTO_TCTL_RUNMASK, (void *) (uintptr_t) mask) == -1) {
-        log_msg("WARN", "cannot pin the inference thread on CPU %d: %s",
-                d->opt.cpu, strerror(errno));
+        cadence_log("WARN", "cannot pin the inference thread on CPU %d: %s",
+                    d->opt.cpu, strerror(errno));
     } else {
         d->runmask = (uint32_t) mask;
-        log_msg("INFO", "inference thread: SCHED_FIFO prio %d, pinned on CPU %d",
-                d->opt.prio, d->opt.cpu);
+        cadence_log("INFO", "inference thread: SCHED_FIFO prio %d, pinned on CPU %d",
+                    d->opt.prio, d->opt.cpu);
     }
 
     for (;;) {
@@ -363,47 +299,14 @@ static int start_worker(cadence_daemon_t * d)
     rc = pthread_create(&d->worker, &attr, worker_main, d);
     pthread_attr_destroy(&attr);
     if (rc != 0) {
-        log_msg("ERROR", "cannot create the inference thread: %s", strerror(rc));
+        cadence_log("ERROR", "cannot create the inference thread: %s", strerror(rc));
         return -1;
     }
     d->worker_started = 1;
 
-    log_msg("INFO", "inference thread started: SCHED_FIFO prio %d, CPU %d",
-            d->opt.prio, d->opt.cpu);
+    cadence_log("INFO", "inference thread started: SCHED_FIFO prio %d, CPU %d",
+                d->opt.prio, d->opt.cpu);
     return 0;
-}
-
-/* Answer a request with an error message. */
-static void reply_error(rcvid_t rcvid, int code, const char * message)
-{
-    cadence_rsp_error rsp;
-
-    memset(&rsp, 0, sizeof(rsp));
-    rsp.hdr.magic   = CADENCE_MAGIC;
-    rsp.hdr.version = CADENCE_PROTO_VERSION;
-    rsp.hdr.type    = CADENCE_RSP_ERROR;
-    rsp.code        = code;
-    snprintf(rsp.message, sizeof(rsp.message), "%s", message);
-    MsgReply(rcvid, EOK, &rsp, sizeof(rsp));
-}
-
-/* Answer a request with the real-time configuration of the service. */
-static void reply_status(cadence_daemon_t * d, rcvid_t rcvid)
-{
-    cadence_rsp_status rsp;
-
-    memset(&rsp, 0, sizeof(rsp));
-    rsp.hdr.magic   = CADENCE_MAGIC;
-    rsp.hdr.version = CADENCE_PROTO_VERSION;
-    rsp.hdr.type    = CADENCE_RSP_STATUS;
-    rsp.policy      = SCHED_FIFO;
-    rsp.priority    = d->opt.prio;
-    rsp.runmask     = d->runmask;
-    rsp.n_threads   = d->opt.n_threads;
-    rsp.ctx_size    = d->opt.n_ctx;
-    rsp.max_tokens  = d->opt.max_tokens;
-    snprintf(rsp.model, sizeof(rsp.model), "%s", d->opt.model);
-    MsgReply(rcvid, EOK, &rsp, sizeof(rsp));
 }
 
 /* Queue a generation request on the inference thread. */
@@ -413,7 +316,7 @@ static void handle_generate(cadence_daemon_t * d, rcvid_t rcvid,
     cadence_rsp_accepted rsp;
 
     pthread_mutex_lock(&d->lock);
-    d->job        = *req;
+    d->job         = *req;
     d->job_pending = 1;
     pthread_cond_signal(&d->cond);
     pthread_mutex_unlock(&d->lock);
@@ -424,7 +327,7 @@ static void handle_generate(cadence_daemon_t * d, rcvid_t rcvid,
     rsp.hdr.type    = CADENCE_RSP_ACCEPTED;
     rsp.job_id      = 1;
     MsgReply(rcvid, EOK, &rsp, sizeof(rsp));
-    log_msg("INFO", "generate request queued (%d chars)", (int) strlen(req->prompt));
+    cadence_log("INFO", "generate request queued (%d chars)", (int) strlen(req->prompt));
 }
 
 /* Dispatch one received message. */
@@ -435,31 +338,27 @@ static void handle_request(cadence_daemon_t * d, rcvid_t rcvid,
     case CADENCE_REQ_GENERATE:
         handle_generate(d, rcvid, (const cadence_req_generate *) body);
         break;
-    case CADENCE_REQ_PING: {
-        cadence_rsp_status rsp;
-        memset(&rsp, 0, sizeof(rsp));
-        rsp.hdr.magic   = CADENCE_MAGIC;
-        rsp.hdr.version = CADENCE_PROTO_VERSION;
-        rsp.hdr.type    = CADENCE_RSP_PONG;
-        MsgReply(rcvid, EOK, &rsp, sizeof(rsp));
+    case CADENCE_REQ_PING:
+        cadence_reply_pong(rcvid);
+        break;
+    case CADENCE_REQ_STATUS: {
+        cadence_status_t status;
+        memset(&status, 0, sizeof(status));
+        status.n_threads  = d->opt.n_threads;
+        status.ctx_size   = d->opt.n_ctx;
+        status.max_tokens = d->opt.max_tokens;
+        status.priority   = d->opt.prio;
+        status.runmask    = d->runmask;
+        snprintf(status.model, sizeof(status.model), "%.127s", d->opt.model);
+        cadence_reply_status(rcvid, &status);
         break;
     }
-    case CADENCE_REQ_STATUS:
-        reply_status(d, rcvid);
-        break;
     case CADENCE_REQ_CANCEL:
         g_cancel = 1;
-        {
-            cadence_rsp_status rsp;
-            memset(&rsp, 0, sizeof(rsp));
-            rsp.hdr.magic   = CADENCE_MAGIC;
-            rsp.hdr.version = CADENCE_PROTO_VERSION;
-            rsp.hdr.type    = CADENCE_RSP_PONG;
-            MsgReply(rcvid, EOK, &rsp, sizeof(rsp));
-        }
+        cadence_reply_pong(rcvid);
         break;
     default:
-        reply_error(rcvid, EINVAL, "unknown request type");
+        cadence_reply_error(rcvid, EINVAL, "unknown request type");
         break;
     }
 }
@@ -483,7 +382,7 @@ static void dispatch_loop(cadence_daemon_t * d)
             if (errno == EINTR) {
                 continue; /* a signal: check g_stop */
             }
-            log_msg("ERROR", "MsgReceive failed: %s", strerror(errno));
+            cadence_log("ERROR", "MsgReceive failed: %s", strerror(errno));
             break;
         }
         if (rcvid == 0) {
@@ -498,80 +397,85 @@ static void dispatch_loop(cadence_daemon_t * d)
             continue;
         }
         if (msg.hdr.magic != CADENCE_MAGIC) {
-            reply_error(rcvid, EPROTO, "bad magic");
+            cadence_reply_error(rcvid, EPROTO, "bad magic");
             continue;
         }
         if (msg.hdr.version != CADENCE_PROTO_VERSION) {
-            reply_error(rcvid, EPROTO, "unsupported protocol version");
+            cadence_reply_error(rcvid, EPROTO, "unsupported protocol version");
             continue;
         }
         handle_request(d, rcvid, &msg.hdr, &msg);
     }
 }
 
+/* Load the model, publish the name and serve until SIGTERM. */
+static int run_service(cadence_daemon_t * d)
+{
+    char err[256];
+
+    cadence_log("INFO", "loading model '%s' (ctx=%d, threads=%d)",
+                d->opt.model, d->opt.n_ctx, d->opt.n_threads);
+    d->llm = cadence_llm_load(d->opt.model, d->opt.n_ctx, d->opt.n_threads, err, sizeof(err));
+    if (!d->llm) {
+        cadence_log("FATAL", "%s", err);
+        return 1;
+    }
+    cadence_log("INFO", "model loaded");
+
+    d->attach = name_attach(NULL, d->opt.name, 0);
+    if (!d->attach) {
+        cadence_log("FATAL", "name_attach('%s') failed: %s", d->opt.name, strerror(errno));
+        cadence_llm_free(d->llm);
+        return 1;
+    }
+    d->chid = d->attach->chid;
+
+    if (start_worker(d) != 0) {
+        name_detach(d->attach, 0);
+        cadence_llm_free(d->llm);
+        return 1;
+    }
+
+    cadence_log("INFO", "cadenced ready on /dev/name/local/%s (pid %d)",
+                d->opt.name, (int) getpid());
+    dispatch_loop(d);
+
+    cadence_log("INFO", "shutting down");
+    g_stop = 1;
+    pthread_mutex_lock(&d->lock);
+    pthread_cond_broadcast(&d->cond);
+    pthread_mutex_unlock(&d->lock);
+    if (d->worker_started) {
+        pthread_join(d->worker, NULL);
+    }
+    name_detach(d->attach, 0);
+    cadence_llm_free(d->llm);
+    cadence_log("INFO", "bye");
+    return 0;
+}
+
 int main(int argc, char ** argv)
 {
     cadence_daemon_t d;
-    cadence_opts_t opt;
-    char err[256];
     int rc;
 
-    rc = parse_args(argc, argv, &opt);
+    rc = cadence_parse_args(argc, argv, &d.opt);
     if (rc == 2) {
-        usage(argv[0]);
+        cadence_usage(argv[0]);
         return 0;
     }
     if (rc != 0) {
-        usage(argv[0]);
+        cadence_usage(argv[0]);
         return 1;
     }
     if (install_handlers() != 0) {
-        log_msg("FATAL", "cannot install the signal handlers: %s", strerror(errno));
+        cadence_log("FATAL", "cannot install the signal handlers: %s", strerror(errno));
         return 1;
     }
 
     memset(&d, 0, sizeof(d));
-    d.opt = opt;
     pthread_mutex_init(&d.lock, NULL);
     pthread_cond_init(&d.cond, NULL);
 
-    set_fifo(opt.prio);
-
-    log_msg("INFO", "loading model '%s' (ctx=%d, threads=%d)", opt.model, opt.n_ctx, opt.n_threads);
-    d.llm = cadence_llm_load(opt.model, opt.n_ctx, opt.n_threads, err, sizeof(err));
-    if (!d.llm) {
-        log_msg("FATAL", "%s", err);
-        return 1;
-    }
-    log_msg("INFO", "model loaded");
-
-    d.attach = name_attach(NULL, opt.name, 0);
-    if (!d.attach) {
-        log_msg("FATAL", "name_attach('%s') failed: %s", opt.name, strerror(errno));
-        cadence_llm_free(d.llm);
-        return 1;
-    }
-    d.chid = d.attach->chid;
-
-    if (start_worker(&d) != 0) {
-        name_detach(d.attach, 0);
-        cadence_llm_free(d.llm);
-        return 1;
-    }
-
-    log_msg("INFO", "cadenced ready on /dev/name/local/%s (pid %d)", opt.name, (int) getpid());
-    dispatch_loop(&d);
-
-    log_msg("INFO", "shutting down");
-    g_stop = 1;
-    pthread_mutex_lock(&d.lock);
-    pthread_cond_broadcast(&d.cond);
-    pthread_mutex_unlock(&d.lock);
-    if (d.worker_started) {
-        pthread_join(d.worker, NULL);
-    }
-    name_detach(d.attach, 0);
-    cadence_llm_free(d.llm);
-    log_msg("INFO", "bye");
-    return 0;
+    return run_service(&d);
 }

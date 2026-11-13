@@ -41,8 +41,16 @@ pidin threads
 echo ""
 echo "--- question en francais (flux de tokens) ---"
 /proc/boot/cadence-cli -M 64 \
-    -p "Quelle est la capitale de la France ? Reponds en francais, en une seule phrase."
+    -p "Quelle est la capitale de la France ? Reponds en francais, en une seule phrase." &
+CPID=$!
 
+# Pendant la generation : etat des threads du demon et du client.
+/proc/boot/cadence-cli --sleep 25
+echo ""
+echo "--- etat des threads pendant la generation (t+25s) ---"
+pidin threads
+
+wait $CPID
 echo ""
 echo "--- arret propre du service (SIGTERM) ---"
 slay cadenced

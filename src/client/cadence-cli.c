@@ -19,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "cadence_log.h"
 #include "cadence_msg.h"
 
 #define CADENCE_DEFAULT_MAXTOK 128
@@ -31,14 +32,6 @@ union cadence_rsp {
     cadence_rsp_error    err;
     cadence_rsp_status   st;
 };
-
-static double now_ms(void)
-{
-    struct timespec ts;
-
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (double) ts.tv_sec * 1000.0 + (double) ts.tv_nsec / 1000000.0;
-}
 
 static void usage(const char * prog)
 {
@@ -164,7 +157,7 @@ static int stream_tokens(int chid, double * t_first, double * t_last,
     *server_ms = 0.0;
 
     for (;;) {
-        double t_now = now_ms();
+        double t_now = cadence_now_ms();
 
         memset(&rsp, 0, sizeof(rsp));
         rcvid = MsgReceive(chid, &rsp, sizeof(rsp), NULL);
@@ -178,6 +171,10 @@ static int stream_tokens(int chid, double * t_first, double * t_last,
         if (rsp.tok.hdr.magic != CADENCE_MAGIC) {
             fprintf(stderr, "cadence-cli: bad magic on the stream\n");
             return -1;
+        }
+        /* The sender waits for a reply: release it right away. */
+        if (rcvid > 0) {
+            MsgReply(rcvid, EOK, NULL, 0);
         }
         if (rsp.tok.hdr.type == CADENCE_RSP_TOKEN) {
             if (*t_first == 0.0) {
@@ -256,6 +253,17 @@ int main(int argc, char ** argv)
             i++;
             continue;
         }
+        if (!strcmp(a, "--sleep")) {
+            struct timespec ts;
+            if (!v) {
+                fprintf(stderr, "cadence-cli: missing number of seconds\n");
+                return 1;
+            }
+            ts.tv_sec  = atoi(v);
+            ts.tv_nsec = 0;
+            nanosleep(&ts, NULL);
+            return 0; /* sleep only: no request */
+        }
         if (!v) {
             fprintf(stderr, "cadence-cli: missing value for option '%s'\n", a);
             return 1;
@@ -322,7 +330,7 @@ int main(int argc, char ** argv)
     printf("cadence-cli: prompt sent to '%s': %s\n", name, prompt);
     fflush(stdout);
 
-    t0 = now_ms();
+    t0 = cadence_now_ms();
     rc = MsgSend(coid, &req, sizeof(req), &ack, sizeof(ack));
     if (rc == -1) {
         fprintf(stderr, "cadence-cli: the service refused the request: %s\n", strerror(errno));

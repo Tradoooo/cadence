@@ -50,18 +50,24 @@ cd "$OUT_DIR"
 
 echo "== compiling cadenced (C, resource manager) =="
 $QCC -V$TARGET $INCLUDES -Wall -O2 -c "$REPO_DIR/src/daemon/cadenced.c" -o cadenced.o
+$QCC -V$TARGET $INCLUDES -Wall -O2 -c "$REPO_DIR/src/daemon/cadence_opts.c" -o cadence_opts.o
+$QCC -V$TARGET $INCLUDES -Wall -O2 -c "$REPO_DIR/src/daemon/cadence_reply.c" -o cadence_reply.o
+
+echo "== compiling cadence_log.c (shared logging) =="
+$QCC -V$TARGET $INCLUDES -Wall -O2 -c "$REPO_DIR/src/common/cadence_log.c" -o cadence_log.o
 
 echo "== compiling cadence_llm.cpp (C++, llama.cpp glue) =="
 $QXX -V$TARGET $INCLUDES -Wall -O2 -c "$REPO_DIR/src/daemon/cadence_llm.cpp" -o cadence_llm.o
 
 echo "== linking cadenced =="
-$QXX -V$TARGET -o cadenced cadenced.o cadence_llm.o $LIBS
+$QXX -V$TARGET -o cadenced cadenced.o cadence_opts.o cadence_reply.o cadence_log.o \
+    cadence_llm.o $LIBS
 
 echo "== compiling cadence-cli (C, client) =="
 $QCC -V$TARGET $INCLUDES -Wall -O2 -c "$REPO_DIR/src/client/cadence-cli.c" -o cadence-cli.o
 
 echo "== linking cadence-cli =="
-$QCC -V$TARGET -o cadence-cli cadence-cli.o -lm -lsocket
+$QCC -V$TARGET -o cadence-cli cadence-cli.o cadence_log.o -lm -lsocket
 
 echo
 echo "== result =="
