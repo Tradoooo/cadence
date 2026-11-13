@@ -20,9 +20,21 @@ permissions:
   checks: write
 
 concurrency:
-  group: hermes-lite-${{ github.repository }}
-  cancel-in-progress: true
-
+  # Un groupe PAR PR (et par ref pour workflow_dispatch), pas un groupe par dépôt :
+  # avec `hermes-lite-${{ github.repository }}`, deux PR (ou une PR + les refs
+  # `mergify/merge-queue/*` de la file) s'annulaient mutuellement. Un check annulé
+  # est compté comme rouge par Mergify : la file déquait la PR à chaque passage
+  # (« Canceling since a higher priority waiting request … exists »).
+  #
+  # Le type d'événement entre dans la clé : les passages `check_run` et
+  # `workflow_dispatch` (balayage périodique) ne peuvent donc PAS annuler le
+  # passage `pull_request`, qui fait autorité. Entre eux, ils s'annulent :
+  # seule la dernière évaluation compte (les précédentes sont périmées).
+  group: hermes-lite-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.check_run.pull_requests[0].number || github.event.inputs.pr_number || github.ref }}
+  # Un gate interrompu n'est pas un gate vert : le passage `pull_request` n'est
+  # jamais annulé ; les réévaluations (check_run, balayage) si — une evaluation
+  # périmée ne sert à rien et ne doit pas tenir le worker.
+  cancel-in-progress: ${{ github.event_name != 'pull_request' }}
 env:
   GH_TOKEN: ${{ secrets.HERMES_LITE_TOKEN || github.token }}
   # IMPORTANT (runbook §3) : à renseigner PAR DÉPÔT — contexts de statut requis
